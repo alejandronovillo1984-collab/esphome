@@ -1,0 +1,332 @@
+substitutions:
+  name: esphome-web-f8fef8
+  friendly_name: hydro
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  min_version: 2024.6.0
+  name_add_mac_suffix: false
+  project:
+    name: esphome.web
+    version: dev
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+
+api:
+  reboot_timeout: 0s
+ota:
+  - platform: esphome
+
+improv_serial:
+
+wifi:
+  ssid: "redAlejandroRT" # Reemplaza con el nombre de tu red Wi-Fi
+  password: "lolita11" # Reemplaza con la contraseña de tu red Wi-Fi
+  manual_ip:
+    static_ip: 192.168.1.5
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
+    dns1: 8.8.8.8 # DNS primario (Google DNS)
+    dns2: 8.8.4.4
+  ap: # Configuración de punto de acceso para fallback
+    ssid: "hydroWifi"
+    password: "lolita11"
+
+  fast_connect: true # Opcional: útil si usas redes Wi-Fi ocultas o con tiempo de conexión rápido
+
+captive_portal:
+
+dashboard_import:
+  package_import_url: github://esphome/example-configs/esphome-web/esp32.yaml@main
+  import_full_config: true
+
+esp32_improv:
+  authorizer: none
+
+web_server:
+
+globals:
+  - id: rutina_plantines_activa
+    type: bool
+    restore_value: True
+  - id: rutina_luces_activa
+    type: bool
+    restore_value: True
+  - id: rutina_final_activa
+    type: bool
+    restore_value: True
+  - id: rutina_inicial_activa
+    type: bool
+    restore_value: True
+  - id: current_temperature
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+  # - id: mins_encendido_inicial
+  #   type: int
+  #   initial_value: '1'  # Valor inicial en minutos
+# number:
+#   - platform: template
+#     name: "CONFIG/RUTINA R4- Inicial ->Duracion Riego"
+#     id: mins_encendido_inicial
+#     min_value: 1
+#     max_value: 20
+#     initial_value: 1
+#     step: 1
+#     unit_of_measurement: "minutos"
+#     mode: slider
+#     restore_value: true  # Si quieres restaurar el valor guardado al reiniciar
+#     optimistic: true
+# Configuración de los relés
+switch:
+  - platform: gpio
+    name: "R2- Luces"
+    pin: GPIO16
+    restore_mode: RESTORE_DEFAULT_ON
+    id: relay_luces
+    inverted: true
+  - platform: gpio
+    name: "R1- Etapa Final "
+    pin: GPIO17
+    id: relay_etapaFinal
+    inverted: true
+  - platform: gpio
+    name: "R3- Etapa Plantin"
+    pin: GPIO18
+    inverted: true
+    id: relay_etapaPlantin
+  - platform: gpio
+    name: "R4- Etapa Inicial"
+    pin: GPIO19
+    id: relay_etapaInicial
+    inverted: true
+  - platform: template
+    name: "CONFIG/RUTINA R3- Plantin (15min x 1hr DIA, 15min x 2 hr NOCHE)"
+    restore_mode: RESTORE_DEFAULT_ON
+    id: switch_rutina_plantines
+    optimistic: true
+    turn_on_action:
+      - globals.set:
+          id: rutina_plantines_activa
+          value: "true"
+      - logger.log: "Rutina Plantines activada"
+    turn_off_action:
+      - globals.set:
+          id: rutina_plantines_activa
+          value: "false"
+      - logger.log: "Rutina Plantines desactivada"
+
+  - platform: template
+    name: "CONFIG/RUTINA R1- Final (15min x 1hr DIA, 15min x 2hr NOCHE) "
+    id: switch_rutina_final
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
+    icon: "mdi:cog"
+    turn_on_action:
+      - globals.set:
+          id: rutina_final_activa
+          value: "true"
+      - logger.log: "Rutina Final activada"
+    turn_off_action:
+      - globals.set:
+          id: rutina_final_activa
+          value: "false"
+      - logger.log: "Rutina Final desactivada"
+  - platform: template
+    name: "CONFIG/RUTINA R4- Inicial (9 y 19hrs)"
+    restore_mode: RESTORE_DEFAULT_ON
+    id: switch_rutina_inicial
+    optimistic: true
+    turn_on_action:
+      - globals.set:
+          id: rutina_inicial_activa
+          value: "true"
+      - logger.log: "Rutina Inicial activada"
+    turn_off_action:
+      - globals.set:
+          id: rutina_inicial_activa
+          value: "false"
+      - logger.log: "Rutina Inicial desactivada"
+  - platform: template
+    name: "CONFIG/RUTINA R2- Luces (7 a 20 hrs)"
+    id: switch_rutina_luces
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
+    turn_on_action:
+      - globals.set:
+          id: rutina_luces_activa
+          value: "true"
+      - logger.log: "Rutina Luces activada"
+    turn_off_action:
+      - globals.set:
+          id: rutina_luces_activa
+          value: "false"
+      - logger.log: "Rutina Luces desactivada"
+# Configuración de WireGuard para conectarse al servidor VPN
+# wireguard:
+#   address: 10.13.13.2
+#   private_key: "4Gh5E53WE6sdLhtUemMu4p2rWHNSCxC9hs8ftBnIqVU="
+#   peer_endpoint: vpn.yavu.com.ar
+#   peer_public_key: "kxG4FTMKbBHGslxNHMskJrGDiyzmm9iK1hYCUiE0IDc="
+
+time:
+  - platform: sntp
+    id: esphome_time
+    timezone: America/Argentina/Buenos_Aires
+    servers: "pool.ntp.org"
+    update_interval: 60s
+    on_time:
+      #//////////////////////////////////LUCES ////////////////////////////////////////////////////////////////
+      #////////////////////////////////////////////////////////////////////////////////////////////////////////
+      - seconds: 0
+        minutes: 0
+        hours: 7
+        then:
+          - if:
+              condition:
+                lambda: "return id(rutina_luces_activa) == true;"
+              then:
+                - switch.turn_on: relay_luces
+                - logger.log: "R2 Enciendo luces"
+
+      - seconds: 0
+        minutes: 0
+        hours: 20
+        then:
+          - if:
+              condition:
+                lambda: "return id(rutina_luces_activa) == true;"
+              then:
+                - switch.turn_off: relay_luces
+                - logger.log: "R2 Apago luces"
+
+      #//////////////////////////////////ETAPA INICIAL////////////////////////////////////////////////////////////
+      #////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+      # Etapa Inicial (R4): RIEGO 1 a las 9 HORAS
+      - seconds: 0
+        minutes: 0
+        hours: 9
+        then:
+          - if:
+              condition:
+                lambda: "return id(rutina_inicial_activa) == true;"
+              then:
+                - switch.turn_on: relay_etapaInicial
+                - logger.log: "R4 encendido (Etapa Inicial )"
+                - delay: 20s
+                - switch.turn_off: relay_etapaInicial
+                - logger.log: "R4 apagado (Etapa Inicial )"
+      # Etapa Inicial (R4): RIEGO 2 a las 14 HORAS
+      # - seconds: 0
+      #   minutes: 0
+      #   hours: 14
+      #   then:
+      #       - if:
+      #           condition:
+      #             lambda: 'return id(rutina_inicial_activa) == true;'
+      #           then:
+      #             - switch.turn_on: relay_etapaInicial
+      #             - logger.log: "R4 encendido (Etapa Inicial )"
+      #             - delay: 20s
+      #             - switch.turn_off: relay_etapaInicial
+      #             - logger.log: "R4 apagado (Etapa Inicial )"
+
+      # Etapa Inicial (R4): RIEGO a las 19 HORAS
+      - seconds: 0
+        minutes: 0
+        hours: 19
+        then:
+          - if:
+              condition:
+                lambda: "return id(rutina_inicial_activa) == true;"
+              then:
+                - switch.turn_on: relay_etapaInicial
+                - logger.log: "R4 encendido (Etapa Inicial )"
+                - delay: 20s
+                - switch.turn_off: relay_etapaInicial
+                - logger.log: "R4 apagado (Etapa Inicial )"
+
+      # Etapa Inicial (R4): Horas de oscuridad (15 min encendido, 1h30 apagado)
+      # - seconds: 0
+      #   minutes: /480
+      #   hours: 20-6
+      #   then:
+      #       - if:
+      #           condition:
+      #             lambda: 'return id(rutina_inicial_activa) == true;'
+      #           then:
+      #             - switch.turn_on: relay_etapaInicial
+      #             - logger.log: "R4 encendido (Etapa Inicial - Oscuridad)"
+      #             - delay: 15s
+      #             - switch.turn_off: relay_etapaInicial
+      #             - logger.log: "R4 apagado (Etapa Inicial - Oscuridad)"
+      #//////////////////////////////////ETAPA FINAL////////////////////////////////////////////////////////////
+      #////////////////////////////////////////////////////////////////////////////////////////////////////////
+      # Etapa Final (R1): Horas de sol (15 min encendido, 15 min apagado)
+      - seconds: 0
+        minutes: /45
+        hours: 7-19
+        then:
+          - if:
+              condition:
+                lambda: "return id(rutina_final_activa) == true;"
+              then:
+                - switch.turn_on: relay_etapaFinal
+                - logger.log: "R1 encendido (Etapa Final Dos - Sol)"
+                - delay: 15min
+                - switch.turn_off: relay_etapaFinal
+                - logger.log: "R1 apagado (Etapa Final Dos - Sol)"
+
+      # Etapa Final (R1): Horas de oscuridad (15 min encendido, 1h30 apagado)
+      - seconds: 0
+        minutes: /120
+        hours: 20-6
+        then:
+          - if:
+              condition:
+                lambda: "return id(rutina_final_activa) == true;"
+              then:
+                - switch.turn_on: relay_etapaFinal
+                - logger.log: "R1 encendido (Etapa Final - Oscuridad)"
+                - delay: 15min
+                - switch.turn_off: relay_etapaFinal
+                - logger.log: "R1 apagado (Etapa Final - Oscuridad)"
+      #//////////////////////////////////PLANTIN////////////////////////////////////////////////////////////
+      #////////////////////////////////////////////////////////////////////////////////////////////////////////
+      # Etapa Plantin Dos (R3): Horas de sol (15 min encendido, 15 min apagado)
+      - seconds: 0
+        minutes: /45
+        hours: 7-19
+        then:
+          - if:
+              condition:
+                lambda: "return id(rutina_plantines_activa) == true;"
+              then:
+                - switch.turn_on: relay_etapaPlantin
+                - logger.log: "R3 encendido (Rutina activa)"
+                - delay: 15min
+                - switch.turn_off: relay_etapaPlantin
+                - logger.log: "R3 apagado (Rutina activa)"
+              else:
+                - logger.log: "Rutina Plantines desactivada, no se enciende el relé"
+      # Etapa Plantin Dos (R3): Horas de oscuridad (15 min encendido, 1h30 apagado)
+      - seconds: 0
+        minutes: /120
+        hours: 20-6
+        then:
+          - if:
+              condition:
+                lambda: "return id(rutina_plantines_activa) == true;"
+              then:
+                - switch.turn_on: relay_etapaPlantin
+                - logger.log: "R3 encendido (Etapa Plantin Dos - Oscuridad)"
+                - delay: 15min
+                - switch.turn_off: relay_etapaPlantin
+                - logger.log: "R3 apagado (Etapa Plantin Dos - Oscuridad)"

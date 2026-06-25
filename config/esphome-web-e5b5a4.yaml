@@ -1,0 +1,1011 @@
+# Documentation
+# https://heltec.org/project/wireless-tracker/
+# https://docs.heltec.org/en/node/esp32/wireless_tracker/index.html
+# https://resource.heltec.cn/download/Wireless_Tracker/Wireless%20Tracker1.1.pdf
+# https://resource.heltec.cn/download/Wireless_Tracker/Wireless_Tacker1.1/HTIT-Tracker_V0.5.pdf
+
+substitutions:
+  name: "esphome-web-e5b5a4"
+  friendly_name: "Heltec Compuerta"
+  zona_horaria: "America/Argentina/Buenos_Aires"
+
+preferences:
+  flash_write_interval: 10s
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: false
+  includes:
+    - lora_helpers.h
+  on_boot:
+    - priority: 900.0
+      then:
+        - switch.turn_on: display_status
+    - priority: -100.0
+      then:
+        - delay: 500ms
+        - button.press: reset_gnss
+
+globals:
+  - id: routine_start_time
+    type: uint32_t
+    initial_value: "0"
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "RM7K+/od/u4DwpYI/2uIAGjyxoteIbjMwFJSLsoF4Ck="
+
+ota:
+  - platform: esphome
+    password: "a07f0ecafb9903e33bc48562d36e3616"
+
+wifi:
+  id: wifi_comp
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # CAMPO: nunca reiniciar por falta de WiFi
+  reboot_timeout: 0s
+
+  # Reduce consumo cuando hay conexión
+  power_save_mode: HIGH
+
+  # Conexión más rápida si la red está disponible
+  fast_connect: true
+
+  # Hotspot de emergencia para debug/OTA en el campo
+  # Se activa sólo si no hay WiFi disponible
+  ap:
+    ssid: "Compuerta Debug"
+    password: "7oMJPdiHIgb9"
+    ap_timeout: 1min   # Espera 1 min antes de levantar el AP
+
+captive_portal:
+
+# Web server: solo útil cuando hay WiFi o AP activo (debug/OTA)
+web_server:
+  port: 80
+
+# ── LoRa Telemetría periódica ────────────────────────────────────────────────
+# Transmite cada 10 s el estado completo de la compuerta por radio.
+interval:
+  - interval: 10s
+    then:
+      - lambda: |-
+
+          using namespace lora_custom;
+          std::vector<uint8_t> pkt;
+
+          // Magic number
+          pkt.push_back(LORA_MAGIC_0);
+          pkt.push_back(LORA_MAGIC_1);
+          pkt.push_back(CMD_TELEMETRY);
+
+          // GPS lat / lon
+          push_float(pkt, id(htit_gnss_latitude).state);
+          push_float(pkt, id(htit_gnss_longitude).state);
+
+          // Batería
+          push_float(pkt, id(bat_voltage).state);
+
+          // Nivel de comida
+          push_float(pkt, id(food_percentage).state);
+          push_float(pkt, id(food_level).state);
+
+          // Flags de estado (1 byte cada uno)
+          pkt.push_back(id(gps_enabled).state ? 1 : 0); // index 23
+
+          // Estado del ciclo de comida (0=inactiva, 1=bocina, 2=abriendo, 3=alimentando, 4=cerrando)
+          uint8_t cycle_code = 0;
+          std::string state_str = id(feeder_cycle_state).state;
+          if (state_str == "BOCINA") cycle_code = 1;
+          else if (state_str == "ABRIENDO") cycle_code = 2;
+          else if (state_str == "ALIMENTANDO") cycle_code = 3;
+          else if (state_str == "CERRANDO") cycle_code = 4;
+          pkt.push_back(cycle_code); // index 24
+
+          // Estado de la puerta (0=cerrada,1=abierta,2=abriendo,3=cerrando)
+          uint8_t gate_st = 0;
+          if (id(gate_cover).current_operation == cover::COVER_OPERATION_OPENING) gate_st = 2;
+          else if (id(gate_cover).current_operation == cover::COVER_OPERATION_CLOSING) gate_st = 3;
+          else if (id(gate_cover).is_fully_open()) gate_st = 1;
+          pkt.push_back(gate_st); // index 25
+
+          // Tipo de dispositivo (1 byte: 1 = Compuerta)
+          pkt.push_back(0x01); // index 26
+
+          // Sufijo único de dirección MAC (3 bytes) para identificar el dispositivo
+          uint8_t mac[6];
+          esp_read_mac(mac, ESP_MAC_WIFI_STA);
+          pkt.push_back(mac[3]); // index 27
+          pkt.push_back(mac[4]); // index 28
+          pkt.push_back(mac[5]); // index 29
+
+           // Nuevos campos extendidos (retrocompatible, a partir del index 30)
+          // 1. Segundos configurados de bocina (float, 4 bytes) -> index 30
+          push_float(pkt, id(bocina_secs_num).state);
+          // 2. Minutos restantes de alimentación (float, 4 bytes) -> index 34
+          push_float(pkt, id(time_left_alimenta).state);
+          // 3. Tiempo de apertura configurado en minutos (float, 4 bytes) -> index 38
+          push_float(pkt, id(food_open_mins_num).state);
+          // 4. Altura del repositorio configurada en cm (float, 4 bytes) -> index 42
+          push_float(pkt, id(altura_repositorio_num).state);
+          // 5. Estado de pantalla (uint8_t, 1 byte) -> index 46
+          pkt.push_back(id(display_status).state ? 1 : 0);
+          // 6. Estado de alimentación GPS/Display (uint8_t, 1 byte) -> index 47
+          pkt.push_back(id(power).state ? 1 : 0);
+          // 7. Horarios programados (string variable) -> index 48+
+          std::string sched_str = id(schedule_input).state;
+          pkt.insert(pkt.end(), sched_str.begin(), sched_str.end());
+
+          id(sx_module).transmit_packet(pkt);
+
+
+          ESP_LOGI("lora_tx", "Telemetría enviada (%d bytes)", pkt.size());
+
+  # Failsafe / Chequeo de seguridad periódico
+  - interval: 10s
+    then:
+      - lambda: |-
+          if (!id(run_feeding_routine_script).is_running() && id(routine_start_time) == 0) {
+            std::string current_state = id(feeder_cycle_state).state;
+            if (current_state == "ALIMENTANDO") {
+              ESP_LOGW("failsafe", "Compuerta abierta (ALIMENTANDO) sin rutina activa. Forzando cierre de seguridad!");
+              id(gate_cover).make_call().set_command_close().perform();
+            }
+          }
+
+# https://esphome.io/components/time/
+time:
+  # https://esphome.io/components/time/homeassistant
+  - platform: homeassistant
+    id: homeassistant_time
+    timezone: ${zona_horaria}
+  # https://esphome.io/components/time/gps
+    # Centralized offline scheduler on GPS clock
+  - platform: gps
+    id: gnss_time
+    timezone: ${zona_horaria}
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: "*"
+        then:
+          - lambda: |-
+              if (!id(gnss_time).now().is_valid()) {
+                ESP_LOGW("scheduler", "La hora GPS aun no esta sincronizada. Omitiendo programacion.");
+                return;
+              }
+              std::string hour_str = std::to_string(id(gnss_time).now().hour);
+              std::string sched = id(schedule_input).state;
+              std::string search_target = "," + sched + ",";
+              search_target.erase(std::remove_if(search_target.begin(), search_target.end(), ::isspace), search_target.end());
+              if (search_target.find("," + hour_str + ",") != std::string::npos) {
+                ESP_LOGI("scheduler", "Hora programada detectada (%s:00). Iniciando rutina de comida.", hour_str.c_str());
+                id(run_feeding_routine_script).execute();
+              }
+
+# Light/LED
+output:
+  - platform: gpio
+    id: light_output
+    pin: GPIO18 # LED
+  - platform: gpio
+    id: gnss_rst_output
+    pin: GPIO35 # GNSS_RST
+    inverted: true
+
+light:
+  - platform: binary
+    id: led
+    name: "LED"
+    output: light_output
+
+# SPI Configuration
+spi:
+  # Display
+  - id: spi_st7735
+    clk_pin: GPIO41 # SCLK
+    mosi_pin: GPIO42 # SDIN
+  # LoRa
+  - id: spi_sx126x
+    clk_pin: GPIO9 # LoRa_SCK
+    mosi_pin: GPIO10 # LoRa_MOSI
+    miso_pin: GPIO11 # LoRa_MISO
+
+# Display TFT ST7735
+display:
+  - platform: ili9xxx
+    spi_id: spi_st7735
+    model: st7735
+    id: st7735
+    cs_pin: GPIO38 # CS
+    reset_pin: GPIO39 # RES
+    dc_pin: GPIO40 # RS
+    color_order: bgr
+    invert_colors: true
+    dimensions:
+      width: 160
+      height: 80
+      offset_width: 1
+      offset_height: 26
+    transform:
+      swap_xy: true
+      mirror_y: true
+      mirror_x: false
+    data_rate: 40MHz
+    auto_clear_enabled: true
+    lambda: |-
+      // Fila 1: Solo ID y a la derecha la hora completa (hh:mm:ss)
+      std::string full_name = App.get_name();
+      std::string id_suffix = full_name.length() > 6 ? full_name.substr(full_name.length() - 6) : full_name;
+      
+      char buf_left[16];
+      snprintf(buf_left, sizeof(buf_left), "ID: %s", id_suffix.c_str());
+      it.print(0, 0, id(font_small), id(white), buf_left);
+
+      std::string time_clock_str = "---";
+      auto now = id(homeassistant_time).now();
+      if (!now.is_valid()) {
+        now = id(gnss_time).now();
+      }
+      if (now.is_valid()) {
+        char buf_time[10];
+        now.strftime(buf_time, sizeof(buf_time), "%H:%M:%S");
+        time_clock_str = buf_time;
+      }
+      it.print(160, 0, id(font_small), id(white), TextAlign::TOP_RIGHT, time_clock_str.c_str());
+
+      // Fila 2: Estado de la Rutina (Grande en el Medio)
+      std::string state_str = id(feeder_cycle_state).state;
+      Color state_color = id(white);
+      if (state_str == "BOCINA") state_color = id(yellow);
+      else if (state_str == "ABRIENDO") state_color = id(blue);
+      else if (state_str == "ALIMENTANDO") state_color = id(green);
+      else if (state_str == "CERRANDO") state_color = id(red);
+      it.print(80, 28, id(font_large), state_color, TextAlign::CENTER, state_str.c_str());
+
+      // Fila 3: Un poco más abajo centrado la capacidad de comida (o fase activa si corre la rutina)
+      float food_pct = id(food_percentage).state;
+      char buf_center[32];
+      
+      if (id(run_feeding_routine_script).is_running() && id(routine_start_time) != 0) {
+        uint32_t elapsed = (millis() / 1000) - id(routine_start_time);
+        uint32_t bocina_s = (uint32_t)id(bocina_secs_num).state;
+        uint32_t travel_s = (uint32_t)id(gate_travel_time_num).state;
+        uint32_t open_s = (uint32_t)id(food_open_mins_num).state * 60;
+        
+        std::string phase = "Bocina";
+        uint32_t phase_rem = 0;
+        if (elapsed < bocina_s) {
+          phase = "Bocina";
+          phase_rem = bocina_s - elapsed;
+        } else if (elapsed < bocina_s + travel_s) {
+          phase = "Abriendo";
+          phase_rem = (bocina_s + travel_s) - elapsed;
+        } else if (elapsed < bocina_s + travel_s + open_s) {
+          phase = "Abierta";
+          phase_rem = (bocina_s + travel_s + open_s) - elapsed;
+        } else {
+          phase = "Cerrando";
+          uint32_t total_s = bocina_s + 2 * travel_s + open_s;
+          phase_rem = total_s > elapsed ? total_s - elapsed : 0;
+        }
+        if (phase_rem >= 3600) {
+          snprintf(buf_center, sizeof(buf_center), "%s: %dh%dm", phase.c_str(), phase_rem / 3600, (phase_rem % 3600) / 60);
+        } else if (phase_rem >= 60) {
+          snprintf(buf_center, sizeof(buf_center), "%s: %dm%ds", phase.c_str(), phase_rem / 60, phase_rem % 60);
+        } else {
+          snprintf(buf_center, sizeof(buf_center), "%s: %ds", phase.c_str(), phase_rem);
+        }
+      } else {
+        snprintf(buf_center, sizeof(buf_center), "Comida: %.0f%%", std::isnan(food_pct) ? 0.0 : food_pct);
+      }
+      it.print(80, 48, id(font_small), id(white), TextAlign::CENTER, buf_center);
+
+      // Fila 4: Cierra a la derecha la próxima comida (o fin de rutina)
+      char buf_right[32];
+      if (id(run_feeding_routine_script).is_running() && id(routine_start_time) != 0) {
+        uint32_t elapsed = (millis() / 1000) - id(routine_start_time);
+        uint32_t bocina_s = (uint32_t)id(bocina_secs_num).state;
+        uint32_t travel_s = (uint32_t)id(gate_travel_time_num).state;
+        uint32_t open_s = (uint32_t)id(food_open_mins_num).state * 60;
+        uint32_t total_s = bocina_s + 2 * travel_s + open_s;
+        uint32_t rem = total_s > elapsed ? total_s - elapsed : 0;
+        
+        if (rem >= 3600) {
+          snprintf(buf_right, sizeof(buf_right), "Fin: %dh%dm", rem / 3600, (rem % 3600) / 60);
+        } else if (rem >= 60) {
+          snprintf(buf_right, sizeof(buf_right), "Fin: %dm%ds", rem / 60, rem % 60);
+        } else {
+          snprintf(buf_right, sizeof(buf_right), "Fin: %ds", rem);
+        }
+      } else {
+        std::string next_str = "--";
+        if (now.is_valid()) {
+          int sec_left = lora_custom::get_seconds_to_next_feeding(now.hour, now.minute, now.second, id(schedule_input).state);
+          if (sec_left >= 0) {
+            int h = sec_left / 3600;
+            int m = (sec_left % 3600) / 60;
+            char buf_next[16];
+            if (h > 0) {
+              snprintf(buf_next, sizeof(buf_next), "%dh%dm", h, m);
+            } else {
+              snprintf(buf_next, sizeof(buf_next), "%dm", m);
+            }
+            next_str = buf_next;
+          }
+        }
+        snprintf(buf_right, sizeof(buf_right), "Prox: %s", next_str.c_str());
+      }
+      it.print(160, 79, id(font_small), id(white), TextAlign::BOTTOM_RIGHT, buf_right);
+
+# Fonts
+font:
+  - file: "gfonts://Roboto Mono"
+    id: my_roboto
+    size: 16
+  - file: "gfonts://Roboto Mono"
+    id: font_small
+    size: 10
+  - file: "gfonts://Roboto Mono"
+    id: font_large
+    size: 22
+
+# Colors
+color:
+  - id: white
+    red: 100%
+    green: 100%
+    blue: 100%
+  - id: red
+    red: 100%
+    green: 0%
+    blue: 0%
+  - id: green
+    red: 0%
+    green: 100%
+    blue: 0%
+  - id: blue
+    red: 0%
+    green: 0%
+    blue: 100%
+  - id: yellow
+    red: 100%
+    green: 100%
+    blue: 0%
+
+# Switches and Controls
+switch:
+  # Power (Display & GNSS)
+  - platform: gpio
+    id: power
+    name: "Power (Display & GNSS)"
+    restore_mode: RESTORE_DEFAULT_OFF
+    pin:
+      number: GPIO3
+      inverted: true
+      mode:
+        output: true
+        pulldown: true
+  # Display status
+  - platform: gpio
+    id: display_status
+    name: "Display Status"
+    restore_mode: RESTORE_DEFAULT_ON
+    pin:
+      number: GPIO21
+      mode: OUTPUT
+  # Charge Control
+  - platform: gpio
+    id: charge_control
+    name: "Charge Control"
+    restore_mode: RESTORE_DEFAULT_ON
+    pin:
+      number: GPIO2
+      mode: OUTPUT
+
+  # L298N H-Bridge Motor Direction Switches
+  - platform: gpio
+    pin: GPIO6
+    id: open_switch
+    name: "Motor Abrir (IN1)"
+    interlock: [close_switch]
+    restore_mode: ALWAYS_OFF
+  - platform: gpio
+    pin: GPIO7
+    id: close_switch
+    name: "Motor Cerrar (IN2)"
+    interlock: [open_switch]
+    restore_mode: ALWAYS_OFF
+
+  # Relay Bocina Adiestramiento
+  - platform: gpio
+    pin: GPIO15
+    id: bocina_relay
+    name: "Bocina Adiestramiento"
+    icon: "mdi:bullhorn"
+    restore_mode: ALWAYS_OFF
+
+  # Habilitar/Deshabilitar GPS (Hardware reset para bajo consumo)
+  - platform: template
+    name: "GPS Habilitado"
+    id: gps_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:
+      - output.turn_off: gnss_rst_output # Libera reset (enciende GNSS)
+      - logger.log: "GNSS Hardware Activado"
+    turn_off_action:
+      - output.turn_on: gnss_rst_output # Mantiene reset (apaga GNSS)
+      - logger.log: "GNSS Hardware Desactivado"
+
+# Cover component representing the feeder door
+cover:
+  - platform: template
+    name: "Puerta Comedero"
+    id: gate_cover
+    optimistic: true
+    assumed_state: true
+    restore_mode: NO_RESTORE
+    open_action:
+      - script.execute: open_gate_script
+    close_action:
+      - script.execute: close_gate_script
+    stop_action:
+      - script.stop: open_gate_script
+      - script.stop: close_gate_script
+      - switch.turn_off: open_switch
+      - switch.turn_off: close_switch
+
+# Sensors (Battery, Ultrasonic, and Template Configuration)
+sensor:
+  # Uptime
+  - platform: uptime
+    id: last_boot
+    type: timestamp
+    name: "Last Boot (Uptime)"
+
+  # Battery Voltage
+  - platform: adc
+    id: bat_voltage
+    name: "BAT Voltage"
+    pin: GPIO1
+    attenuation: 12db
+    accuracy_decimals: 3
+    samples: 3
+    update_interval: 1min
+    filters:
+      - multiply: 4.8837
+
+  # HC-SR04 Ultrasonic Sensor for Food Level
+  - platform: ultrasonic
+    trigger_pin: GPIO4
+    echo_pin: GPIO5
+    name: "Comedero Distancia Comida"
+    id: food_level
+    update_interval: 10s
+    accuracy_decimals: 1
+    unit_of_measurement: "cm"
+    filters:
+      - multiply: 100.0
+
+  # Food Level Percentage Sensor
+  - platform: template
+    name: "Comedero Nivel Comida"
+    id: food_percentage
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    icon: "mdi:percent"
+    update_interval: 10s
+    lambda: |-
+      float dist = id(food_level).state; // en cm
+      float total_height = id(altura_repositorio_num).state; // en cm
+      float offset = id(food_offset_num).state; // en cm, default 20
+      if (std::isnan(dist) || total_height <= 0) {
+        return {};
+      }
+      if (dist >= total_height) {
+        return 0.0;
+      }
+      if (dist <= offset) { // Blind spot / 100% full limit
+        return 100.0;
+      }
+      float percent = ((total_height - dist) / (total_height - offset)) * 100.0;
+      if (percent < 0.0) percent = 0.0;
+      if (percent > 100.0) percent = 100.0;
+      return percent;
+
+  # Tiempo Restante de Alimentacion en minutos (cuenta regresiva)
+  - platform: template
+    name: "Tiempo Restante Alimentacion"
+    id: time_left_alimenta
+    unit_of_measurement: "min"
+    accuracy_decimals: 1
+    icon: "mdi:timer-sand"
+    update_interval: 1s
+    lambda: |-
+      if (id(run_feeding_routine_script).is_running() && id(routine_start_time) != 0) {
+        uint32_t elapsed = (millis() / 1000) - id(routine_start_time);
+        uint32_t bocina_s = (uint32_t)id(bocina_secs_num).state;
+        uint32_t travel_s = (uint32_t)id(gate_travel_time_num).state;
+        uint32_t open_s = (uint32_t)id(food_open_mins_num).state * 60;
+        uint32_t total_active_s = bocina_s + travel_s + open_s;
+        if (elapsed < total_active_s) {
+          return (float)(total_active_s - elapsed) / 60.0f;
+        }
+      }
+      return 0.0f;
+
+
+# User-configurable Numbers (sliders as inputs) for the routine
+number:
+  # Tiempo de Apertura de Comida en minutos
+  - platform: template
+    id: food_open_mins_num
+    name: "Tiempo Apertura Comida (min)"
+    icon: "mdi:clock-outline"
+    min_value: 1
+    max_value: 1440
+    step: 1
+    mode: box
+    optimistic: true
+    restore_value: true
+    initial_value: 60
+
+  # Cantidad de segundos que suena la bocina antes de abrir la compuerta
+  - platform: template
+    id: bocina_secs_num
+    name: "Segundos Bocina (s)"
+    icon: "mdi:timer-outline"
+    min_value: 1
+    max_value: 60
+    step: 1
+    mode: box
+    optimistic: true
+    restore_value: true
+    initial_value: 5
+
+  # Altura del repositorio en cm para el calculo del porcentaje
+  - platform: template
+    id: altura_repositorio_num
+    name: "Altura Repositorio (cm)"
+    icon: "mdi:arrow-up-down"
+    min_value: 20
+    max_value: 300
+    step: 5
+    mode: box
+    optimistic: true
+    restore_value: true
+    initial_value: 100
+
+  # Offset del sensor de comida en cm (ciego de lectura)
+  - platform: template
+    id: food_offset_num
+    name: "Offset Sensor Comida (cm)"
+    icon: "mdi:ruler"
+    min_value: 5
+    max_value: 50
+    step: 1
+    mode: box
+    optimistic: true
+    restore_value: true
+    initial_value: 20
+
+  # Tiempo de recorrido para abrir/cerrar la compuerta en segundos
+  - platform: template
+    id: gate_travel_time_num
+    name: "Tiempo Viaje Compuerta (s)"
+    icon: "mdi:swap-horizontal"
+    min_value: 2
+    max_value: 180
+    step: 1
+    mode: box
+    optimistic: true
+    restore_value: true
+    initial_value: 68
+
+# User-configurable string representing feeding schedule
+text:
+  # Horas de alimentación separadas por comas (ej. "8,12,18")
+  - platform: template
+    id: schedule_input
+    name: "Horarios de Comida (h)"
+    icon: "mdi:calendar-clock"
+    mode: text
+    optimistic: true
+    restore_value: true
+    initial_value: "8,12,18"
+    min_length: 1
+    max_length: 64
+
+# Automated feeding routine sequence script
+script:
+  - id: run_feeding_routine_script
+    mode: single # Evita ejecuciones superpuestas
+    then:
+      - logger.log: "Iniciando rutina automatica de comida..."
+      - lambda: |-
+          id(routine_start_time) = millis() / 1000;
+      # 1. Enciende la bocina para llamar a las vacas
+      - switch.turn_on: bocina_relay
+      # 2. Espera la cantidad de segundos configurados por el usuario
+      - delay: !lambda "return (int)id(bocina_secs_num).state * 1000;"
+      # 3. Apaga la bocina
+      - switch.turn_off: bocina_relay
+      - delay: 500ms
+      # 4. Abre la compuerta del comedero
+      - cover.open: gate_cover
+      # Espera a que complete el recorrido de apertura
+      - delay: !lambda "return (int)id(gate_travel_time_num).state * 1000;"
+      # 5. La mantiene abierta monitoreando activamente el tiempo restante
+      - while:
+          condition:
+            lambda: |-
+              return id(time_left_alimenta).state > 0.0f;
+          then:
+            - delay: 1s
+      # 6. Cierra la compuerta
+      - cover.close: gate_cover
+
+      # Espera a que complete el recorrido de cierre
+      - delay: !lambda "return (int)id(gate_travel_time_num).state * 1000;"
+      - lambda: |-
+          id(routine_start_time) = 0;
+      - logger.log: "Rutina automatica de comida finalizada con exito."
+
+  # Script para la accion de abrir la compuerta
+  - id: open_gate_script
+    mode: restart
+    then:
+      - switch.turn_off: close_switch
+      - delay: 50ms
+      - switch.turn_on: open_switch
+      - delay: !lambda "return (int)id(gate_travel_time_num).state * 1000;"
+      - switch.turn_off: open_switch
+
+  # Script para la accion de cerrar la compuerta
+  - id: close_gate_script
+    mode: restart
+    then:
+      - switch.turn_off: open_switch
+      - delay: 50ms
+      - switch.turn_on: close_switch
+      - delay: !lambda "return (int)id(gate_travel_time_num).state * 1000;"
+      - switch.turn_off: close_switch
+
+# LoRa Module (SX1262)
+sx126x:
+  id: sx_module
+  spi_id: spi_sx126x
+  hw_version: sx1262
+  cs_pin: GPIO8 # LoRa_NSS
+  rst_pin: GPIO12 # LoRa_RST
+  busy_pin: GPIO13 # LoRa_BUSY
+  dio1_pin: GPIO14 # DIO1
+  frequency: 863000000
+  modulation: LORA
+  rf_switch: true
+  pa_power: 3
+  tcxo_voltage: 1_7V
+  crc_enable: true
+  on_packet:
+    then:
+      - lambda: |-
+          using namespace lora_custom;
+          ESP_LOGD("lora_rx", "Paquete recibido (%d bytes) RSSI:%.1f SNR:%.1f",
+                   (int)x.size(), rssi, snr);
+          ESP_LOGD("lora_rx", "raw: %s", format_hex(x).c_str());
+
+          if (!is_valid_packet(x)) {
+            ESP_LOGW("lora_rx", "Paquete inválido (magic incorrecto), ignorado.");
+            return;
+          }
+
+          uint8_t cmd_or_mac = x[2];
+
+          // ── 0x01 Telemetría de otro dispositivo ───────────────────────────
+          if (cmd_or_mac == CMD_TELEMETRY) {
+            // Paquete de telemetría de otro nodo - solo logueamos
+            if (x.size() >= 30) {
+              float rem_lat  = pop_float(x, 3);
+              float rem_lon  = pop_float(x, 7);
+              float rem_bat  = pop_float(x, 11);
+              float rem_food = pop_float(x, 15);
+              ESP_LOGI("lora_rx", "Telemetría remota recibida: lat=%.4f lon=%.4f bat=%.2fV food=%.0f%%",
+                       rem_lat, rem_lon, rem_bat, rem_food);
+            }
+            return;
+          }
+
+          // ── Comandos de control con direccionamiento MAC ──────────────────
+          // Formato: [Magic 2B][Target MAC 3B][CMD 1B][Payload...]
+          if (x.size() < 6) {
+            ESP_LOGW("lora_rx", "Paquete de comando demasiado corto (%d bytes)", (int)x.size());
+            return;
+          }
+
+          // Obtener MAC local
+          uint8_t my_mac[6];
+          esp_read_mac(my_mac, ESP_MAC_WIFI_STA);
+
+          // Verificar si el comando es para nosotros o broadcast (FFFFFF)
+          bool is_broadcast = (x[2] == 0xFF && x[3] == 0xFF && x[4] == 0xFF);
+          bool is_target = (x[2] == my_mac[3] && x[3] == my_mac[4] && x[4] == my_mac[5]);
+
+          if (!is_broadcast && !is_target) {
+            ESP_LOGD("lora_rx", "Comando para otro dispositivo (%02x%02x%02x), ignorado.", x[2], x[3], x[4]);
+            return;
+          }
+
+          uint8_t cmd = x[5];
+          ESP_LOGI("lora_rx", "Procesando comando 0x%02X (%s)", cmd, is_broadcast ? "broadcast" : "dirigido");
+
+          // CMD 0x10: Habilitar/Deshabilitar GPS
+          if (cmd == CMD_SET_GPS && x.size() >= 7) {
+            if (x[6]) { id(gps_enabled).turn_on();  ESP_LOGI("lora_cmd", "GPS activado"); }
+            else       { id(gps_enabled).turn_off(); ESP_LOGI("lora_cmd", "GPS desactivado"); }
+            return;
+          }
+
+          // CMD 0x11: Tiempo apertura comida (float minutos)
+          if (cmd == CMD_SET_FOOD_SECS && x.size() >= 10) {
+            float val = pop_float(x, 6);
+            auto call = id(food_open_mins_num).make_call();
+            call.set_value(val);
+            call.perform();
+            ESP_LOGI("lora_cmd", "food_open_mins ajustado a %.0f min", val);
+            return;
+          }
+
+          // CMD 0x12: Tiempo bocina (float segundos)
+          if (cmd == CMD_SET_BOCINA_SECS && x.size() >= 10) {
+            float val = pop_float(x, 6);
+            auto call = id(bocina_secs_num).make_call();
+            call.set_value(val);
+            call.perform();
+            ESP_LOGI("lora_cmd", "bocina_secs ajustado a %.0f s", val);
+            return;
+          }
+
+          // CMD 0x13: Altura repositorio (float cm)
+          if (cmd == CMD_SET_ALTURA_REPO && x.size() >= 10) {
+            float val = pop_float(x, 6);
+            auto call = id(altura_repositorio_num).make_call();
+            call.set_value(val);
+            call.perform();
+            ESP_LOGI("lora_cmd", "altura_repo ajustada a %.0f cm", val);
+            return;
+          }
+
+          // CMD 0x14: Horario comida (string ASCII, sin nulo terminal)
+          if (cmd == CMD_SET_SCHEDULE && x.size() >= 7) {
+            std::string sched(x.begin() + 6, x.end());
+            id(schedule_input).publish_state(sched);
+            ESP_LOGI("lora_cmd", "schedule ajustado: %s", sched.c_str());
+            return;
+          }
+
+          // CMD 0x20: Abrir compuerta
+          if (cmd == CMD_OPEN_GATE) {
+            auto call = id(gate_cover).make_call();
+            call.set_command_open();
+            call.perform();
+            ESP_LOGI("lora_cmd", "Compuerta: ABRIR");
+            return;
+          }
+
+          // CMD 0x21: Cerrar compuerta
+          if (cmd == CMD_CLOSE_GATE) {
+            auto call = id(gate_cover).make_call();
+            call.set_command_close();
+            call.perform();
+            ESP_LOGI("lora_cmd", "Compuerta: CERRAR");
+            return;
+          }
+
+          // CMD 0x22: Detener compuerta
+          if (cmd == CMD_STOP_GATE) {
+            auto call = id(gate_cover).make_call();
+            call.set_command_stop();
+            call.perform();
+            ESP_LOGI("lora_cmd", "Compuerta: DETENER");
+            return;
+          }
+
+          // CMD 0x23: Iniciar rutina de comida
+          if (cmd == CMD_FEED_ROUTINE) {
+            id(run_feeding_routine_script).execute();
+            ESP_LOGI("lora_cmd", "Rutina de comida iniciada por LoRa");
+            return;
+          }
+
+          // CMD 0x24: Sonar bocina 3 segundos
+          if (cmd == CMD_HORN_3S) {
+            id(bocina_relay).turn_on();
+            delay(3000);
+            id(bocina_relay).turn_off();
+            ESP_LOGI("lora_cmd", "Bocina sonada 3s por LoRa");
+            return;
+          }
+
+          // CMD 0x30: Reiniciar dispositivo
+          if (cmd == CMD_RESTART) {
+            ESP_LOGW("lora_cmd", "Reiniciando por comando LoRa...");
+            App.safe_reboot();
+            return;
+          }
+
+          // CMD 0x40: Set Display status (ON/OFF)
+          if (cmd == CMD_SET_DISPLAY && x.size() >= 7) {
+            if (x[6]) {
+              id(display_status).turn_on();
+            } else {
+              id(display_status).turn_off();
+            }
+            ESP_LOGI("lora_cmd", "Display %s por LoRa", x[6] ? "encendido" : "apagado");
+            return;
+          }
+
+          // CMD 0x41: Set Power rail status (ON/OFF)
+          if (cmd == CMD_SET_POWER && x.size() >= 7) {
+            if (x[6]) {
+              id(power).turn_on();
+            } else {
+              id(power).turn_off();
+            }
+            ESP_LOGI("lora_cmd", "Power %s por LoRa", x[6] ? "encendido" : "apagado");
+            return;
+          }
+
+
+          ESP_LOGW("lora_rx", "CMD desconocido: 0x%02X", cmd);
+
+# GNSS UART
+uart:
+  id: uart_gnss
+  tx_pin: GPIO34 # GNSS_RX
+  rx_pin: GPIO33 # GNSS_TX
+  baud_rate: 115200
+
+# GPS Component
+gps:
+  latitude:
+    name: "Latitude"
+    id: htit_gnss_latitude
+  longitude:
+    name: "Longitude"
+    id: htit_gnss_longitude
+  altitude:
+    name: "Altitude"
+    id: htit_gnss_altitude
+  speed:
+    name: "Speed"
+    id: htit_gnss_speed
+  course:
+    name: "Course"
+    id: htit_gnss_course
+  satellites:
+    name: "Satellites"
+    id: htit_gnss_satellites
+  hdop:
+    name: "HDOP"
+    id: htit_gnss_hdop
+  update_interval: 5s
+
+# Buttons
+button:
+  - platform: restart
+    name: "Restart"
+  - platform: shutdown
+    name: "Shutdown"
+  - platform: safe_mode
+    name: "Safe Mode Boot"
+  - platform: output
+    id: reset_gnss
+    name: "Reset GNSS"
+    output: gnss_rst_output
+    duration: 1ms
+    entity_category: config
+
+  # Botón Iniciar Rutina de Comida Manual
+  - platform: template
+    name: "Iniciar Rutina Comida"
+    id: start_routine_button
+    icon: "mdi:cow"
+    on_press:
+      - script.execute: run_feeding_routine_script
+
+  # Botón Sonar Bocina Manual (3 segundos)
+  - platform: template
+    name: "Sonar Bocina (3s)"
+    icon: "mdi:volume-high"
+    on_press:
+      - switch.turn_on: bocina_relay
+      - delay: 3s
+      - switch.turn_off: bocina_relay
+
+# User button
+binary_sensor:
+  - platform: gpio
+    id: user_button
+    name: "USER Button"
+    pin:
+      number: GPIO0
+      mode: INPUT_PULLUP
+      inverted: true
+    on_press:
+      - if:
+          condition:
+            wifi.enabled:
+          then:
+            - wifi.disable:
+            - logger.log: "WiFi Deshabilitado por Botón Físico"
+          else:
+            - wifi.enable:
+            - logger.log: "WiFi Habilitado por Botón Físico"
+
+# Text Sensors (WiFi info & Date/Time)
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+      id: wifi_ip
+    ssid:
+      name: "SSID"
+      id: wifi_ssid_sensor
+
+  - platform: template
+    name: "Comedero Estado Ciclo"
+    id: feeder_cycle_state
+    icon: "mdi:clock-fast"
+    update_interval: 1s
+    lambda: |-
+      if (id(run_feeding_routine_script).is_running() && id(routine_start_time) != 0) {
+        uint32_t elapsed = (millis() / 1000) - id(routine_start_time);
+        uint32_t bocina_s = (uint32_t)id(bocina_secs_num).state;
+        uint32_t travel_s = (uint32_t)id(gate_travel_time_num).state;
+        uint32_t open_s = (uint32_t)id(food_open_mins_num).state * 60;
+        
+        if (elapsed < bocina_s) return {"BOCINA"};
+        if (elapsed < bocina_s + travel_s) return {"ABRIENDO"};
+        if (elapsed < bocina_s + travel_s + open_s) return {"ALIMENTANDO"};
+        return {"CERRANDO"};
+      } else {
+        if (id(gate_cover).current_operation == cover::COVER_OPERATION_OPENING) {
+          return {"ABRIENDO"};
+        } else if (id(gate_cover).current_operation == cover::COVER_OPERATION_CLOSING) {
+          return {"CERRANDO"};
+        } else if (id(gate_cover).is_fully_open()) {
+          return {"ALIMENTANDO"};
+        } else {
+          return {"INACTIVA"};
+        }
+      }
+
+  - platform: template
+    name: "Comedero Fecha Hora"
+    id: date_time_sensor
+    icon: "mdi:clock"
+    update_interval: 1s
+    lambda: |-
+      auto now = id(homeassistant_time).now();
+      if (!now.is_valid()) {
+        now = id(gnss_time).now();
+      }
+      if (!now.is_valid()) {
+        return {"Sin Sincronizar"};
+      }
+      char buf[30];
+      now.strftime(buf, sizeof(buf), "%d/%m/%Y %H:%M:%S");
+      return {buf};

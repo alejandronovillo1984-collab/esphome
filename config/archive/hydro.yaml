@@ -1,0 +1,32 @@
+esphome:
+  name: hydro
+  friendly_name: hydro
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "czabUYRVu4hgmHqDpIRaPBFhh2RUEiaRqa3mcHE+H64="
+
+ota:
+  - platform: esphome
+    password: "5870f2a951cd22e18b507e761ee3d6a3"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Hydro Fallback Hotspot"
+    password: "V29ysNksKPTf"
+
+captive_portal:
+    

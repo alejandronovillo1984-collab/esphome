@@ -1,0 +1,468 @@
+# ===================================================================
+# SECCIÓN 1: Sustituciones (Variables de Configuración)
+# ===================================================================
+substitutions:
+  # 1. IDENTIDAD DEL DISPOSITIVO
+  dev_name: "aathgrbxt40sp3x66yad"
+  dev_friendly_name: "HYDRO FORRAJE"
+
+  # 2. CONEXIÓN WIFI
+  wifi_dev_ssid: "redOficina"
+  wifi_dev_pass: "lolita11"
+
+  # 3. SERVIDOR MQTT
+  mqtt_host: "mqtt.hidroponiacentenario.com.ar"
+  mqtt_port: "1883"
+  mqtt_user: "alejandro"
+  mqtt_pass: "piteroski1984"
+
+  # 4. VALORES POR DEFECTO
+  zona_horaria: "America/Argentina/Buenos_Aires"
+  
+  # 5. PINES DE VÁLVULAS (Por favor verificar/modificar)
+  pin_v1: "15" # Válvula Principal (Agua) # R2 (K2)
+  pin_v2: "5" # Válvula Sanitizante / Agua Normal  # R3 (K3)
+  pin_v3: "4" # Válvula Nutrientes # R4 (K4)
+
+# ===================================================================
+# SECCIÓN 2: Configuración Básica del ESP32
+# ===================================================================
+esphome:
+  name: ${dev_name}
+  friendly_name: ${dev_friendly_name}
+  # Delay de arranque: deja que los strapping pins (GPIO5/15) se estabilicen
+  # antes de que los relés se inicialicen. Evita el crash en boot.
+  on_boot:
+    priority: 600
+    then:
+      - delay: 2s
+      - lambda: |-
+          // Obtener la causa del reinicio
+          esp_reset_reason_t reason = esp_reset_reason();
+          const char* r = "Desconocido";
+          switch (reason) {
+            case ESP_RST_POWERON:  r = "Encendido"; break;
+            case ESP_RST_SW:      r = "Soft Reset"; break;
+            case ESP_RST_PANIC:   r = "Crash/Panic"; break;
+            case ESP_RST_WDT:     r = "Watchdog"; break;
+            case ESP_RST_DEEPSLEEP: r = "Deep Sleep"; break;
+            case ESP_RST_BROWNOUT: r = "Brownout"; break;
+            case ESP_RST_SDIO:    r = "SDIO"; break;
+            default: break;
+          }
+          bool activo = id(switch_iniciar_ciclo).state;
+          int dia = id(set_dia_actual).state;
+          char msg[120];
+          snprintf(msg, sizeof(msg),
+            "[BOOT:%s] Sistema=%s | Dia=%d | Ciclos=%d",
+            r,
+            activo ? "ACTIVO" : "INACTIVO",
+            dia,
+            id(ciclos_hoy).state);
+          id(estado_log) = msg;
+          ESP_LOGI("boot", "%s", msg);
+
+esp32:
+  board: esp32dev
+  framework:
+    # Arduino es compatible con el firmware previo del dispositivo.
+    # Cambiar de esp-idf a arduino via OTA puede causar rollback.
+    type: arduino
+
+http_request:
+  timeout: 60s
+  verify_ssl: false
+
+logger:
+  level: INFO
+
+ota:
+  - platform: esphome
+
+api:
+  reboot_timeout: 0s  # Sin cliente HA conectado, NO reiniciar automáticamente
+
+web_server:
+  port: 80
+
+# ===================================================================
+# SECCIÓN 3: Conectividad
+# ===================================================================
+wifi:
+  id: wifi_component
+  # use_address eliminado: ESPHome resuelve por mDNS (${dev_name}.local)
+  # Esto permite OTA en cualquier red sin importar la IP asignada por DHCP
+  networks:
+    - ssid: ${wifi_dev_ssid}
+      password: ${wifi_dev_pass}
+      priority: 20.0
+  # Hotspot de emergencia: si no se conecta a ninguna red conocida,
+  # levanta un AP para configurar WiFi vía captive portal en campo
+  ap:
+    ssid: "FORRAJERO-${dev_name}"
+    password: "dFsGT4DPUy3W"
+    ap_timeout: 3min  # 3 min para dar tiempo en campo
+
+captive_portal:
+
+mqtt:
+  broker: ${mqtt_host}
+  port: ${mqtt_port}
+  username: ${mqtt_user}
+  password: ${mqtt_pass}
+  keepalive: 120s
+  reboot_timeout: 120s
+  discovery: false
+  on_connect:
+    - logger.log: ">> CONEXIÓN MQTT ESTABLECIDA <<"
+    - component.update: reloj_sntp
+    # Limpiar mensaje retenido del topic de comando del switch.
+    # Si la app publicó 'OFF' con retain=true, el broker lo reenvía en cada
+    # reconexión y dispara turn_off_action. Publicando vacío se borra.
+    - mqtt.publish:
+        topic: "${dev_name}/switch/iniciar_detener_ciclo_forraje/command"
+        payload: ""
+        retain: true
+    - mqtt.publish:
+        topic: "${dev_name}/switch/iniciar___detener_ciclo_forraje/command"
+        payload: ""
+        retain: true
+
+time:
+  - platform: sntp
+    id: reloj_sntp
+    timezone: ${zona_horaria}
+    servers: [0.pool.ntp.org, 1.pool.ntp.org]
+    on_time:
+      # A las 00:00 avanzamos de día si está activo
+      - seconds: 0
+        minutes: 0
+        hours: 0
+        then:
+          - lambda: |-
+              if (id(switch_iniciar_ciclo).state) {
+                id(set_dia_actual).publish_state(id(set_dia_actual).state + 1);
+                id(ciclos_hoy).publish_state(0);
+                ESP_LOGI("ciclo", "Avanzando al Día %d", (int)id(set_dia_actual).state);
+                if (id(set_dia_actual).state > 14) {
+                  id(switch_iniciar_ciclo).turn_off();
+                  ESP_LOGI("ciclo", "¡Ciclo de 14 días completado!");
+                }
+              }
+      # Cada minuto, chequeamos si nos toca regar
+      - seconds: 0
+        then:
+          - lambda: |-
+              auto t = id(reloj_sntp).now();
+              char ts[24];
+              snprintf(ts, sizeof(ts), "%02d/%02d/%04d %02d:%02d",
+                       t.day_of_month, t.month, t.year, t.hour, t.minute);
+
+              if (!id(switch_iniciar_ciclo).state) {
+                // Solo loguear cada hora para no saturar el sensor
+                if (t.minute == 0) {
+                  char msg[80];
+                  snprintf(msg, sizeof(msg), "%s - Sistema inactivo, riego omitido.", ts);
+                  id(estado_log) = msg;
+                }
+                return;
+              }
+              
+              int d = id(set_dia_actual).state;
+              int min_of_day = t.hour * 60 + t.minute;
+              
+              int interval_mins = 0;
+              if (d == 1) interval_mins = 180;
+              else if (d >= 2 && d <= 3) interval_mins = 120;
+              else if (d >= 4 && d <= 6) interval_mins = 120;
+              else if (d >= 7 && d <= 12) interval_mins = 90;
+              else if (d >= 13 && d <= 14) interval_mins = 180;
+
+              // Log de chequeo cada 15 minutos para ver que el cron está vivo
+              if (t.minute % 15 == 0) {
+                char msg[100];
+                snprintf(msg, sizeof(msg), "%s - Chequeo cron | Día %d | Frec. %d min", ts, d, interval_mins);
+                id(estado_log) = msg;
+              }
+              
+              if (interval_mins > 0 && (min_of_day % interval_mins == 0)) {
+                ESP_LOGI("cron", "Hora coincidente con la frecuencia (%d min). Iniciando Riego.", interval_mins);
+                char msg[80];
+                snprintf(msg, sizeof(msg), "%s - Cron: iniciando riego automático (cada %d min).", ts, interval_mins);
+                id(estado_log) = msg;
+                id(ejecutar_riego).execute();
+              }
+
+# ===================================================================
+# SECCIÓN 4: Variables Globales (Estado del Sistema)
+# ===================================================================
+globals:
+  - id: estado_log
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+
+# ===================================================================
+# SECCIÓN 5: Sensores y Controles (MQTT / Home Assistant)
+# ===================================================================
+text_sensor:
+  - platform: template
+    name: "Estado Actual Ciclo"
+    id: estado_actual_texto
+    icon: "mdi:sprout"
+    update_interval: 10s
+    lambda: |-
+      if (!id(switch_iniciar_ciclo).state) return {"Detenido"};
+      int d = id(set_dia_actual).state;
+      if (d == 1) return {"Día 1: Hidratación / Siembra"};
+      if (d >= 2 && d <= 3) return {"Día 2-3: Germinación"};
+      if (d >= 4 && d <= 6) return {"Día 4-6: Inicio Crecimiento"};
+      if (d >= 7 && d <= 10) return {"Día 7-10: Crecimiento Máximo"};
+      if (d >= 11 && d <= 12) return {"Día 11-12: Engorde / Pico"};
+      if (d >= 13 && d <= 14) return {"Día 13-14: Lavado / Cosecha"};
+      return {"Finalizado o Fuera de Rango"};
+
+  # Bitácora de eventos con timestamp — se actualiza en cada acción relevante
+  - platform: template
+    name: "Estado Detalle"
+    id: estado_detalle
+    icon: "mdi:text-box-search-outline"
+    update_interval: 2s
+    lambda: return id(estado_log);
+
+number:
+  - platform: template
+    id: ciclos_hoy
+    name: "Ciclos Hoy Interno"
+    internal: true
+    min_value: 0
+    max_value: 1000
+    step: 1
+    restore_value: true
+    optimistic: true
+    initial_value: 0
+
+  - platform: template
+    name: "Día Actual (Manual)"
+    id: set_dia_actual
+    min_value: 0
+    max_value: 15
+    step: 1
+    restore_value: true
+    optimistic: false
+    initial_value: 0
+    set_action:
+      - lambda: |-
+          id(set_dia_actual).publish_state(x);
+          if (x > 0 && x <= 14) {
+            if (!id(switch_iniciar_ciclo).state) {
+              id(switch_iniciar_ciclo).turn_on();
+            }
+          } else {
+            if (id(switch_iniciar_ciclo).state) {
+              id(switch_iniciar_ciclo).turn_off();
+            }
+          }
+
+  # --- Tiempo base de riego AGUA (segundos) ---
+  - platform: template
+    name: "Tiempo Riego Agua (s)"
+    id: tiempo_riego_agua
+    icon: "mdi:water-outline"
+    min_value: 1
+    max_value: 300
+    step: 1
+    initial_value: 5
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "s"
+
+  # --- Tiempo base de riego SOLUCIÓN (segundos) ---
+  - platform: template
+    name: "Tiempo Riego Solucion (s)"
+    id: tiempo_riego_solucion
+    icon: "mdi:beaker-outline"
+    min_value: 0
+    max_value: 300
+    step: 1
+    initial_value: 3
+    restore_value: true
+    optimistic: true
+    unit_of_measurement: "s"
+
+  # --- Índice de progresión (0.0 = sin ajuste, 1.0 = doble al día 14) ---
+  - platform: template
+    name: "Indice Progresion Riego"
+    id: indice_progresion
+    icon: "mdi:chart-line"
+    min_value: 0.0
+    max_value: 3.0
+    step: 0.1
+    initial_value: 1.0
+    restore_value: true
+    optimistic: true
+
+switch:
+  - platform: template
+    name: "Iniciar / Detener Ciclo Forraje"
+    id: switch_iniciar_ciclo
+    icon: "mdi:power"
+    restore_mode: RESTORE_DEFAULT_OFF
+    optimistic: false
+    turn_on_action:
+      - lambda: |-
+          if (id(switch_iniciar_ciclo).state) return;
+          id(switch_iniciar_ciclo).publish_state(true);
+          
+          if (id(set_dia_actual).state <= 0 || id(set_dia_actual).state > 14) {
+            id(set_dia_actual).publish_state(1);
+          }
+          id(ciclos_hoy).publish_state(0);
+          
+          auto t = id(reloj_sntp).now();
+          char msg[80];
+          snprintf(msg, sizeof(msg), "%02d/%02d/%04d %02d:%02d - Ciclo INICIADO. Día %d.",
+                   t.day_of_month, t.month, t.year, t.hour, t.minute, (int)id(set_dia_actual).state);
+          id(estado_log) = msg;
+          ESP_LOGI("switch", "Ciclo INICIADO.");
+    turn_off_action:
+      - lambda: |-
+          if (!id(switch_iniciar_ciclo).state) {
+            ESP_LOGW("switch", "turn_off ignorado: sistema ya estaba inactivo");
+            return;
+          }
+          id(switch_iniciar_ciclo).publish_state(false);
+          id(set_dia_actual).publish_state(0);
+          
+          auto t = id(reloj_sntp).now();
+          char msg[80];
+          snprintf(msg, sizeof(msg), "%02d/%02d/%04d %02d:%02d - Ciclo DETENIDO.",
+                   t.day_of_month, t.month, t.year, t.hour, t.minute);
+          id(estado_log) = msg;
+          ESP_LOGI("switch", "Ciclo DETENIDO.");
+
+  # Válvulas Físicas
+  - platform: gpio
+    pin: ${pin_v1}
+    id: valvula_agua
+    name: "Válvula Agua"
+    restore_mode: ALWAYS_OFF
+    internal: false
+  - platform: gpio
+    pin: ${pin_v2}
+    id: valvula_sanitizante
+    name: "Válvula Sanitizante"
+    restore_mode: ALWAYS_OFF
+    internal: false
+  - platform: gpio
+    pin: ${pin_v3}
+    id: valvula_solucion
+    name: "Válvula Solucion"
+    restore_mode: ALWAYS_OFF
+    internal: false
+
+# ===================================================================
+# SECCIÓN 6a: Botones de Control
+# ===================================================================
+button:
+  - platform: template
+    name: "Riego Manual"
+    id: btn_riego_manual
+    icon: "mdi:water-pump"
+    on_press:
+      - logger.log:
+          level: INFO
+          format: ">>> Riego manual presionado desde webserver/MQTT."
+      - lambda: |-
+          auto t = id(reloj_sntp).now();
+          char msg[80];
+          snprintf(msg, sizeof(msg), "%02d/%02d/%04d %02d:%02d - Riego MANUAL solicitado.",
+                   t.day_of_month, t.month, t.year, t.hour, t.minute);
+          id(estado_log) = msg;
+      - mqtt.publish:
+          topic: "${dev_name}/button/riego_manual/state"
+          payload: "PRESS"
+          retain: false
+      - script.execute: ejecutar_riego
+
+  - platform: restart
+    name: "Reiniciar Sistema"
+    id: btn_reiniciar
+    icon: "mdi:restart"
+
+# ===================================================================
+# SECCIÓN 6: Lógica de Riego (Scripts)
+# ===================================================================
+script:
+  - id: ejecutar_riego
+    mode: single
+    then:
+      - lambda: |-
+          auto t = id(reloj_sntp).now();
+          char ts[24];
+          snprintf(ts, sizeof(ts), "%02d/%02d/%04d %02d:%02d",
+                   t.day_of_month, t.month, t.year, t.hour, t.minute);
+
+          if (!id(switch_iniciar_ciclo).state) {
+            ESP_LOGI("riego", "Proceso omitido: sistema no activo.");
+            char msg[80];
+            snprintf(msg, sizeof(msg), "%s - Riego omitido: sistema NO activo.", ts);
+            id(estado_log) = msg;
+            return;
+          }
+
+          int d = id(set_dia_actual).state;
+          id(ciclos_hoy).publish_state(id(ciclos_hoy).state + 1);
+
+          if (d < 1 || d > 14) {
+            ESP_LOGW("riego", "Día fuera de rango (%d), no se riega.", d);
+            char msg[80];
+            snprintf(msg, sizeof(msg), "%s - Día %d fuera de rango, riego cancelado.", ts, d);
+            id(estado_log) = msg;
+            return;
+          }
+
+          // Fórmula de tiempo: base + (indice * dia)
+          float extra = id(indice_progresion).state * (float)d;
+          int t_agua     = (int)(id(tiempo_riego_agua).state    + extra);
+          int t_solucion = 0;
+
+          // --- FASES DEL CICLO ---
+          // Días  1 -  4: Solo agua (hidratación / germinación)
+          // Días  5 - 13: Agua + Solución nutritiva
+          // Días 14     : Solo agua (lavado / cosecha)
+          if (d >= 5 && d <= 13) {
+            t_solucion = (int)(id(tiempo_riego_solucion).state + extra);
+          }
+
+          ESP_LOGI("riego", "Día %d | Ciclo %d | Extra=%.1fs | Agua=%ds | Solucion=%ds",
+                   d, id(ciclos_hoy).state, extra, t_agua, t_solucion);
+
+          // Publicar estado detallado con tiempos
+          {
+            char msg[120];
+            if (t_solucion > 0) {
+              snprintf(msg, sizeof(msg),
+                "%s - Riego Día %d | Ciclo %d | Agua=%ds Solución=%ds (extra=%.1fs)",
+                ts, d, id(ciclos_hoy).state, t_agua, t_solucion, extra);
+            } else {
+              snprintf(msg, sizeof(msg),
+                "%s - Riego Día %d | Ciclo %d | Solo Agua=%ds (extra=%.1fs)",
+                ts, d, id(ciclos_hoy).state, t_agua, extra);
+            }
+            id(estado_log) = msg;
+          }
+
+          // --- Activar Agua (V1) ---
+          if (t_agua > 0) {
+            id(valvula_agua).turn_on();
+            App.scheduler.set_timeout(id(valvula_agua), "agua_off", t_agua * 1000,
+              []() { id(valvula_agua).turn_off(); });
+          }
+
+          // --- Activar Solución (V3) en paralelo con el agua ---
+          if (t_solucion > 0) {
+            id(valvula_solucion).turn_on();
+            App.scheduler.set_timeout(id(valvula_solucion), "solucion_off", t_solucion * 1000,
+              []() { id(valvula_solucion).turn_off(); });
+          }

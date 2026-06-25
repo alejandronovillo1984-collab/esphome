@@ -1,0 +1,32 @@
+esphome:
+  name: forrajero
+  friendly_name: forrajero
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "twd1aRTml7HK9TSbH+4s9aSrFwLLBZU1NdNpbvsmG50="
+
+ota:
+  - platform: esphome
+    password: "eedad8a11a8fcc456712aa14500ff383"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Forrajero Fallback Hotspot"
+    password: "8R5Y3r9I9nG1"
+
+captive_portal:
+    

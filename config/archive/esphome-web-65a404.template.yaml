@@ -1,0 +1,31 @@
+esphome:
+  name: esphome-web-65a404
+  friendly_name: ESPHome Web 65a404
+  min_version: 2025.9.0
+  name_add_mac_suffix: false
+
+esp32:
+  variant: esp32
+  framework:
+    type: esp-idf
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+captive_portal:
+
+web_server:
+ota:
+- platform: esphome
+
+wifi:
+  ssid: "redAlejandroRT" # Reemplaza con el nombre de tu red Wi-Fi
+  password: "lolita11" # Reemplaza con la contraseña de tu red Wi-Fi
+  manual_ip:
+    static_ip: 192.168.1.163
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
+    dns1: 8.8.8.8 # DNS primario (Google DNS)
+    dns2: 8.8.4.4

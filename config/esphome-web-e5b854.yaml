@@ -1,0 +1,847 @@
+# Documentation
+# https://heltec.org/project/wireless-tracker/
+# https://docs.heltec.org/en/node/esp32/wireless_tracker/index.html
+# https://resource.heltec.cn/download/Wireless_Tracker/Wireless%20Tracker1.1.pdf
+# https://resource.heltec.cn/download/Wireless_Tracker/Wireless_Tacker1.1/HTIT-Tracker_V0.5.pdf
+
+# Datasheets
+# USB-UART (CP2102): https://www.silabs.com/documents/public/data-sheets/CP2102-9.pdf
+# Battery Charger (TP4054): https://www.laskakit.cz/user/related_files/tp4054.pdf
+# Microcontroller (ESP32-S3FN8): 
+# Display (ST7735): https://www.displayfuture.com/Display/datasheet/controller/ST7735.pdf
+# LoRa (SX1262): https://semtech.my.salesforce.com/sfc/p/#E0000000JelG/a/RQ000008nKCH/hp2iKwMDKWl34g1D3LBf_zC7TGBRIo2ff5LMnS8r19s
+# GNSS (UC6580): https://pt.unicore.com/uploads/file/uc6580-datasheet-en-r1-1.pdf
+
+substitutions:
+  name: "repeater-gateway"
+  friendly_name: "Repeater Gateway"
+  zona_horaria: "America/Argentina/Buenos_Aires"
+  mqtt_host: "mqtt.hidroponiacentenario.com.ar"
+  mqtt_port: "1883"
+  mqtt_user: "alejandro"
+  mqtt_pass: "piteroski1984"
+  device_mac: "e5b854"  # Últimos 3 bytes del MAC WiFi – sufijo del gateway
+
+preferences:
+  flash_write_interval: 10s
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: true
+  includes:
+    - lora_helpers.h
+  on_boot:
+    - priority: 950.0
+      then:
+        - lambda: |-
+            uint8_t mac[6];
+            esp_read_mac(mac, ESP_MAC_WIFI_STA);
+            char mac_str[7];
+            snprintf(mac_str, sizeof(mac_str), "%02x%02x%02x", mac[3], mac[4], mac[5]);
+            if (global_mqtt_client != nullptr) {
+              global_mqtt_client->set_topic_prefix(std::string(mac_str), std::string(mac_str));
+              ESP_LOGI("mqtt", "MQTT topic prefix set dynamically to: %s", mac_str);
+            }
+    - priority: 900.0
+      then:
+        - switch.turn_on: display_status
+    - priority: -100.0
+      then:
+        - delay: 500ms
+        - button.press: reset_gnss
+        - if:
+            condition:
+              not:
+                switch.is_on: gateway_mode
+            then:
+              - mqtt.disable:
+        - lambda: |-
+            id(boot_finished) = true;
+            ESP_LOGI("boot", "Arranque completo. Control de acciones de restauración liberado.");
+
+globals:
+  - id: wifi_is_enabled
+    type: bool
+    restore_value: false
+    initial_value: "true"
+  - id: boot_finished
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  reboot_timeout: 0s   # No reiniciar si no hay clientes HA (opera principalmente por MQTT)
+  encryption:
+    key: "RM7K+/od/u4DwpYI/2uIAGjyxoteIbjMwFJSLsoF4Ck="
+
+ota:
+  - platform: esphome
+    password: "a07f0ecafb9903e33bc48562d36e3616"
+
+wifi:
+  id: wifi_comp
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # CAMPO: nunca reiniciar por falta de WiFi
+  reboot_timeout: 0s
+
+  # Reduce consumo cuando hay conexión
+  power_save_mode: HIGH
+
+  # Conexión más rápida si la red está disponible
+  fast_connect: true
+
+  # Hotspot de emergencia para debug/OTA en el campo
+  ap:
+    ssid: "Repetidor Debug"
+    password: "7oMJPdiHIgb9"
+    ap_timeout: 1min
+
+captive_portal:
+
+web_server:
+  port: 80
+
+mqtt:
+  id: mqtt_client
+  broker: ${mqtt_host}
+  port: ${mqtt_port}
+  username: ${mqtt_user}
+  password: ${mqtt_pass}
+  reboot_timeout: 0s
+  topic_prefix: ${device_mac}
+  # Birth/LWT explícitos → siempre van al topic correcto sin importar set_topic_prefix
+  birth_message:
+    topic: "${device_mac}/status"
+    payload: "online"
+    retain: true
+  will_message:
+    topic: "${device_mac}/status"
+    payload: "offline"
+    retain: true
+  on_connect:
+    then:
+      - lambda: |-
+          // Al conectar/reconectar a MQTT, reseteamos la bandera online local de todos los dispositivos
+          // para forzar la re-publicación de su estado online actual en el Broker.
+          for (auto &d : lora_custom::get_last_seen_devices()) {
+            d.second.online = false;
+          }
+
+          // Limpiar topics viejos (stale retained offline/state) de la dirección vieja
+          if (global_mqtt_client != nullptr) {
+            global_mqtt_client->publish("repeater-gateway-e5b854/status", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/sensor/last_boot_uptime/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/sensor/bat_voltage/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/sensor/lora_rssi/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/sensor/lora_snr/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/sensor/latitude/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/sensor/longitude/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/sensor/altitude/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/sensor/speed/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/sensor/course/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/sensor/satellites/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/sensor/hdop/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/text_sensor/ip_address/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/text_sensor/ssid/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/switch/power_display_gnss/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/switch/display_status/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/switch/charge_control/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/switch/gps_habilitado/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/switch/modo_gateway_lora_mqtt/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/light/led/state", std::string(""), 0, true);
+            global_mqtt_client->publish("repeater-gateway-e5b854/binary_sensor/user_button/state", std::string(""), 0, true);
+          }
+
+          static bool already_subscribed = false;
+          if (!already_subscribed && global_mqtt_client != nullptr) {
+            global_mqtt_client->subscribe("+/command/+", [](const std::string &topic, const std::string &payload) {
+              if (!id(gateway_mode).state) return;
+              using namespace lora_custom;
+              
+              size_t slash1 = topic.find('/');
+              if (slash1 == std::string::npos) return;
+              std::string dev_id = topic.substr(0, slash1);
+              
+              size_t slash2 = topic.find('/', slash1 + 1);
+              if (slash2 == std::string::npos) return;
+              std::string action = topic.substr(slash2 + 1);
+              
+              ESP_LOGI("mqtt_gateway", "Comando recibido: device=%s, action=%s, payload=%s", 
+                       dev_id.c_str(), action.c_str(), payload.c_str());
+                       
+              uint8_t target_mac[3];
+              if (dev_id == "ffffff" || dev_id == "FFFFFF" || dev_id == "broadcast") {
+                target_mac[0] = 0xFF;
+                target_mac[1] = 0xFF;
+                target_mac[2] = 0xFF;
+              } else {
+                unsigned int m0, m1, m2;
+                if (sscanf(dev_id.c_str(), "%02x%02x%02x", &m0, &m1, &m2) != 3) {
+                  ESP_LOGW("mqtt_gateway", "ID de dispositivo inválido: %s", dev_id.c_str());
+                  return;
+                }
+                target_mac[0] = (uint8_t)m0;
+                target_mac[1] = (uint8_t)m1;
+                target_mac[2] = (uint8_t)m2;
+              }
+              
+              std::vector<uint8_t> pkt;
+              pkt.push_back(LORA_MAGIC_0);
+              pkt.push_back(LORA_MAGIC_1);
+              pkt.push_back(target_mac[0]);
+              pkt.push_back(target_mac[1]);
+              pkt.push_back(target_mac[2]);
+              
+              if (action == "horarios") {
+                pkt.push_back(CMD_SET_SCHEDULE);
+                pkt.insert(pkt.end(), payload.begin(), payload.end());
+                ESP_LOGI("mqtt_gateway", "Fwd: SET_SCHEDULE '%s' to %s", payload.c_str(), dev_id.c_str());
+              } 
+              else if (action == "tiempo_apertura") {
+                char* endptr = nullptr;
+                float val = std::strtof(payload.c_str(), &endptr);
+                if (endptr != payload.c_str() && *endptr == '\0') {
+                  pkt.push_back(CMD_SET_FOOD_SECS);
+                  push_float(pkt, val);
+                  ESP_LOGI("mqtt_gateway", "Fwd: SET_FOOD_MINS '%.1fmin' to %s", val, dev_id.c_str());
+                } else {
+                  ESP_LOGW("mqtt_gateway", "Valor inválido para tiempo_apertura: %s", payload.c_str());
+                  return;
+                }
+              } 
+              else if (action == "segundos_bocina") {
+                char* endptr = nullptr;
+                float val = std::strtof(payload.c_str(), &endptr);
+                if (endptr != payload.c_str() && *endptr == '\0') {
+                  pkt.push_back(CMD_SET_BOCINA_SECS);
+                  push_float(pkt, val);
+                  ESP_LOGI("mqtt_gateway", "Fwd: SET_BOCINA_SECS '%.1fs' to %s", val, dev_id.c_str());
+                } else {
+                  ESP_LOGW("mqtt_gateway", "Valor inválido para segundos_bocina: %s", payload.c_str());
+                  return;
+                }
+              }
+              else if (action == "altura_repositorio") {
+                char* endptr = nullptr;
+                float val = std::strtof(payload.c_str(), &endptr);
+                if (endptr != payload.c_str() && *endptr == '\0') {
+                  pkt.push_back(CMD_SET_ALTURA_REPO);
+                  push_float(pkt, val);
+                  ESP_LOGI("mqtt_gateway", "Fwd: SET_ALTURA_REPO '%.1fcm' to %s", val, dev_id.c_str());
+                } else {
+                  ESP_LOGW("mqtt_gateway", "Valor inválido para altura_repositorio: %s", payload.c_str());
+                  return;
+                }
+              } 
+              else if (action == "rutina") {
+                if (payload == "START" || payload == "start" || payload == "1") {
+                  pkt.push_back(CMD_FEED_ROUTINE);
+                  ESP_LOGI("mqtt_gateway", "Fwd: FEED_ROUTINE to %s", dev_id.c_str());
+                } else {
+                  ESP_LOGW("mqtt_gateway", "Valor de rutina inválido (debe ser START/1): %s", payload.c_str());
+                  return;
+                }
+              } 
+              else if (action == "display_status") {
+                pkt.push_back(CMD_SET_DISPLAY);
+                uint8_t val = (payload == "ON" || payload == "on" || payload == "1") ? 1 : 0;
+                pkt.push_back(val);
+                ESP_LOGI("mqtt_gateway", "Fwd: SET_DISPLAY '%d' to %s", val, dev_id.c_str());
+              } 
+              else if (action == "power") {
+                pkt.push_back(CMD_SET_POWER);
+                uint8_t val = (payload == "ON" || payload == "on" || payload == "1") ? 1 : 0;
+                pkt.push_back(val);
+                ESP_LOGI("mqtt_gateway", "Fwd: SET_POWER '%d' to %s", val, dev_id.c_str());
+              } 
+              else {
+                ESP_LOGW("mqtt_gateway", "Acción de comando desconocida: %s", action.c_str());
+                return;
+              }
+              lora_custom::enqueue_packet(pkt);
+            });
+            already_subscribed = true;
+          }
+
+# ── LoRa Telemetría propia del Repetidor (cada 60 s) ─────────────────────
+# Transmite su posición GPS y batería por radio para que la red lo detecte.
+interval:
+  # Descola y transmite comandos MQTT hacia LoRa de forma segura en el hilo principal (evita colisiones SPI)
+  - interval: 50ms
+    then:
+      - lambda: |-
+          using namespace lora_custom;
+          std::vector<uint8_t> pkt;
+          while (dequeue_packet(pkt)) {
+            id(sx_module).transmit_packet(pkt);
+            ESP_LOGI("mqtt_gateway", "Comando descolado y transmitido por LoRa (%d bytes)", (int)pkt.size());
+          }
+  # Chequeo periódico de estado Online/Offline de dispositivos de la red LoRa (cada 30 s)
+  - interval: 30s
+    then:
+      - lambda: |-
+          using namespace lora_custom;
+          uint32_t now_secs = millis() / 1000;
+          for (auto &d : get_last_seen_devices()) {
+            if (d.second.online && (now_secs - d.second.last_seen_time >= 300)) {
+              d.second.online = false;
+              ESP_LOGW("mqtt_gateway", "Dispositivo [%s] detectado OFFLINE (inactividad > 5 min)", d.first.c_str());
+              
+              if (id(gateway_mode).state && id(mqtt_client).is_connected()) {
+                char status_topic[64];
+                snprintf(status_topic, sizeof(status_topic), "%s/status", d.first.c_str());
+                id(mqtt_client).publish(status_topic, std::string("offline"), 0, true);
+                ESP_LOGI("mqtt_gateway", "Publicado estado OFFLINE [%s]: offline", status_topic);
+              }
+            }
+          }
+  - interval: 60s
+    then:
+      - lambda: |-
+          using namespace lora_custom;
+          std::vector<uint8_t> pkt;
+
+          pkt.push_back(LORA_MAGIC_0);
+          pkt.push_back(LORA_MAGIC_1);
+          pkt.push_back(CMD_TELEMETRY);
+
+          push_float(pkt, id(htit_gnss_latitude).state);
+          push_float(pkt, id(htit_gnss_longitude).state);
+          push_float(pkt, id(bat_voltage).state);
+
+          // El repetidor no tiene comida ni puerta → enviamos NaN/0
+          push_float(pkt, std::numeric_limits<float>::quiet_NaN());
+          push_float(pkt, std::numeric_limits<float>::quiet_NaN());
+          pkt.push_back(id(gps_enabled).state ? 1 : 0); // index 23
+          pkt.push_back(0); // routine_running: N/A, index 24
+          pkt.push_back(0); // gate_state: N/A, index 25
+
+          // Tipo de dispositivo (1 byte: 2 = Repetidor)
+          pkt.push_back(0x02); // index 26
+
+          // Sufijo único de dirección MAC (3 bytes) para identificar el dispositivo
+          uint8_t mac[6];
+          esp_read_mac(mac, ESP_MAC_WIFI_STA);
+          pkt.push_back(mac[3]); // index 27
+          pkt.push_back(mac[4]); // index 28
+          pkt.push_back(mac[5]); // index 29
+
+          id(sx_module).transmit_packet(pkt);
+          ESP_LOGI("lora_tx", "Telemetría repetidor enviada (%d bytes)", pkt.size());
+
+# https://esphome.io/components/time/
+time:
+  # https://esphome.io/components/time/homeassistant
+  - platform: homeassistant
+    id: homeassistant_time
+    timezone: ${zona_horaria}
+  # https://esphome.io/components/time/gps
+  - platform: gps
+    id: gnss_time
+    timezone: ${zona_horaria}
+
+# Light
+output:
+  - platform: gpio
+    id: light_output
+    pin: GPIO18 # LED
+  - platform: gpio
+    id: gnss_rst_output
+    pin: GPIO35 # GNSS_RST
+    inverted: true
+
+light:
+  - platform: binary
+    id: led
+    name: "LED"
+    output: light_output
+
+# SPI Configuration
+spi:
+  # Display
+  - id: spi_st7735
+    clk_pin: GPIO41 # SCLK
+    mosi_pin: GPIO42 # SDIN
+  # LoRa
+  - id: spi_sx126x
+    clk_pin: GPIO9 # LoRa_SCK
+    mosi_pin: GPIO10 # LoRa_MOSI
+    miso_pin: GPIO11 # LoRa_MISO
+
+# Display TFT ST7735
+display:
+  - platform: ili9xxx
+    spi_id: spi_st7735
+    model: st7735
+    id: st7735
+    cs_pin: GPIO38 # CS
+    reset_pin: GPIO39 # RES
+    dc_pin: GPIO40 # RS
+    color_order: bgr
+    invert_colors: true
+    dimensions:
+      width: 160
+      height: 80
+      offset_width: 1
+      offset_height: 26
+    transform:
+      swap_xy: true
+      mirror_y: true
+      mirror_x: false
+    data_rate: 40MHz
+    auto_clear_enabled: true
+    lambda: |-
+      // Fila 1: Estado WiFi / IP a la izquierda y distintivo a la derecha
+      std::string wifi_str = "WiFi: APAGADO";
+      Color wifi_color = id(red);
+      if (id(wifi_comp).is_connected()) {
+        wifi_str = id(wifi_ip).state;
+        if (wifi_str.empty() || wifi_str == "0.0.0.0") {
+          wifi_str = "Conectando...";
+          wifi_color = id(yellow);
+        } else {
+          wifi_color = id(green);
+        }
+      } else {
+        if (id(wifi_is_enabled)) {
+          wifi_str = "Desconectado";
+        } else {
+          wifi_str = "WiFi: APAGADO";
+        }
+      }
+      it.print(0, 0, id(font_small), wifi_color, wifi_str.c_str());
+
+      bool is_gw = id(gateway_mode).state;
+      std::string role_str = is_gw ? "GATEWAY" : "REPETIDOR";
+      Color role_color = is_gw ? id(blue) : id(green);
+      it.print(160, 0, id(font_small), role_color, TextAlign::TOP_RIGHT, role_str.c_str());
+
+      // Línea divisoria elegante
+      it.line(0, 13, 160, 13, id(white));
+
+      // Título de Dispositivos en red
+      it.print(0, 18, id(font_small), id(yellow), "DISPOSITIVOS EN RED:");
+
+      // Listado de dispositivos activos en los últimos 10 min
+      uint32_t now_secs = millis() / 1000;
+      int y_pos = 32;
+      // Copiar nodos activos
+      std::vector<std::pair<std::string, lora_custom::DeviceInfo>> active_nodes;
+      for (auto const &d : lora_custom::get_last_seen_devices()) {
+        if (now_secs - d.second.last_seen_time < 600) {
+          active_nodes.push_back({d.first, d.second});
+        }
+      }
+
+      int count = 0;
+      for (auto const &d : active_nodes) {
+        char buf_dev[48];
+        if (d.second.type == 1) { // Compuerta
+          // • e5b5a4:95% ALIMENTANDO
+          snprintf(buf_dev, sizeof(buf_dev), "• %s:%.0f%% %s", 
+                   d.first.c_str(), d.second.food_pct, d.second.routine_state.c_str());
+        } else { // Repetidor/Gateway u otros
+          std::string type_str = (d.second.type == 2) ? "GW/REP" : "DESC";
+          snprintf(buf_dev, sizeof(buf_dev), "• %s:%s", 
+                   d.first.c_str(), type_str.c_str());
+        }
+        it.print(2, y_pos, id(font_small), id(white), buf_dev);
+        y_pos += 14;
+        count++;
+        if (count >= 3) break; // Caben 3 dispositivos cómodamente
+      }
+      if (count == 0) {
+        it.print(10, 36, id(font_small), id(red), "Sin dispositivos activos");
+      }
+
+# Fonts
+font:
+  - file: "gfonts://Roboto Mono"
+    id: my_roboto
+    size: 16
+  - file: "gfonts://Roboto Mono"
+    id: font_small
+    size: 10
+
+# Colors
+color:
+  - id: white
+    red: 100%
+    green: 100%
+    blue: 100%
+  - id: red
+    red: 100%
+    green: 0%
+    blue: 0%
+  - id: green
+    red: 0%
+    green: 100%
+    blue: 0%
+  - id: blue
+    red: 0%
+    green: 0%
+    blue: 100%
+  - id: yellow
+    red: 100%
+    green: 100%
+    blue: 0%
+
+# Switches and Controls
+switch:
+  # Power (Display & GNSS)
+  - platform: gpio
+    id: power
+    name: "Power (Display & GNSS)"
+    restore_mode: RESTORE_DEFAULT_OFF
+    pin:
+      number: GPIO3
+      inverted: true
+      mode:
+        output: true
+        pulldown: true
+  # Display status
+  - platform: gpio
+    id: display_status
+    name: "Display Status"
+    restore_mode: RESTORE_DEFAULT_ON
+    pin:
+      number: GPIO21
+      mode: OUTPUT
+  # Charge Control
+  - platform: gpio
+    id: charge_control
+    name: "Charge Control"
+    restore_mode: RESTORE_DEFAULT_ON
+    pin:
+      number: GPIO2
+      mode: OUTPUT
+
+  # Habilitar/Deshabilitar GPS (Hardware reset para bajo consumo)
+  - platform: template
+    name: "GPS Habilitado"
+    id: gps_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:
+      - output.turn_off: gnss_rst_output # Libera reset (enciende GNSS)
+      - logger.log: "GNSS Hardware Activado"
+    turn_off_action:
+      - output.turn_on: gnss_rst_output # Mantiene reset (apaga GNSS)
+      - logger.log: "GNSS Hardware Desactivado"
+
+  # Modo Gateway (Enlaza LoRa con MQTT si está ON)
+  - platform: template
+    name: "Modo Gateway LoRa-MQTT"
+    id: gateway_mode
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - if:
+          condition:
+            lambda: 'return id(boot_finished);'
+          then:
+            - mqtt.enable:
+            - logger.log: "Gateway MQTT Activado"
+    turn_off_action:
+      - if:
+          condition:
+            lambda: 'return id(boot_finished);'
+          then:
+            - mqtt.disable:
+            - logger.log: "Gateway MQTT Desactivado"
+
+# Sensors
+sensor:
+  # Uptime
+  - platform: uptime
+    id: last_boot
+    type: timestamp
+    name: "Last Boot (Uptime)"
+
+  # Battery Voltage
+  - platform: adc
+    id: bat_voltage
+    name: "BAT Voltage"
+    pin: GPIO1
+    attenuation: 12db
+    accuracy_decimals: 3
+    samples: 3
+    update_interval: 1min
+    filters:
+      - multiply: 4.8837
+
+  # LoRa Link Quality – último paquete recibido
+  - platform: template
+    id: lora_rssi
+    name: "LoRa RSSI"
+    unit_of_measurement: "dBm"
+    accuracy_decimals: 1
+    icon: "mdi:signal"
+    update_interval: never
+
+  - platform: template
+    id: lora_snr
+    name: "LoRa SNR"
+    unit_of_measurement: "dB"
+    accuracy_decimals: 1
+    icon: "mdi:sine-wave"
+    update_interval: never
+
+# LoRa Module (SX1262)
+sx126x:
+  id: sx_module
+  spi_id: spi_sx126x
+  hw_version: sx1262
+  cs_pin: GPIO8 # LoRa_NSS
+  rst_pin: GPIO12 # LoRa_RST
+  busy_pin: GPIO13 # LoRa_BUSY
+  dio1_pin: GPIO14 # DIO1
+  frequency: 863000000
+  modulation: LORA
+  rf_switch: true
+  pa_power: 3
+  tcxo_voltage: 1_7V
+  crc_enable: true
+  on_packet:
+    then:
+      - lambda: |-
+          using namespace lora_custom;
+          ESP_LOGD("lora_rx", "Paquete recibido (%d bytes) RSSI:%.1f SNR:%.1f",
+                   (int)x.size(), rssi, snr);
+
+          // Actualizar sensores de calidad de enlace LoRa
+          id(lora_rssi).publish_state(rssi);
+          id(lora_snr).publish_state(snr);
+
+          if (!is_valid_packet(x)) {
+            ESP_LOGW("lora_rx", "Paquete con magic desconocido, ignorado.");
+            return;
+          }
+
+          uint8_t cmd = x[2];
+
+          // ── Telemetría de la Compuerta u otro nodo ──────────────────────────
+          if (cmd == CMD_TELEMETRY && x.size() >= 30) {
+            float rem_lat  = pop_float(x, 3);
+            float rem_lon  = pop_float(x, 7);
+            float rem_bat  = pop_float(x, 11);
+            float rem_food = pop_float(x, 15);
+            uint8_t rem_gps   = x[23];
+            uint8_t rem_cycle = x[24];
+            uint8_t rem_gate  = x[25];
+            uint8_t rem_type  = x[26];
+
+            // Extraer campos adicionales si el paquete es extendido
+            float rem_bocina_secs = 0.0f;
+            float rem_time_left = 0.0f;
+            float rem_tiempo_apertura = 0.0f;
+            float rem_altura_repositorio = 0.0f;
+            uint8_t rem_display_status = 0;
+            uint8_t rem_power_status = 0;
+            std::string rem_horarios = "";
+
+            if (x.size() >= 38) {
+              rem_bocina_secs = pop_float(x, 30);
+              rem_time_left = pop_float(x, 34);
+            }
+            if (x.size() >= 48) {
+              rem_tiempo_apertura = pop_float(x, 38);
+              rem_altura_repositorio = pop_float(x, 42);
+              rem_display_status = x[46];
+              rem_power_status = x[47];
+            }
+            if (x.size() > 48) {
+              rem_horarios = std::string(x.begin() + 48, x.end());
+            }
+
+            // Obtener el identificador del dispositivo emisor a partir del MAC suffix (3 bytes)
+            char dev_id[7];
+            snprintf(dev_id, sizeof(dev_id), "%02x%02x%02x", x[27], x[28], x[29]);
+
+            std::string cycle_str = "INACTIVA";
+            if (rem_cycle == 1) cycle_str = "BOCINA";
+            else if (rem_cycle == 2) cycle_str = "ABRIENDO";
+            else if (rem_cycle == 3) cycle_str = "ALIMENTANDO";
+            else if (rem_cycle == 4) cycle_str = "CERRANDO";
+
+            ESP_LOGI("lora_rx", "Telemetría de [%s] (%s): lat=%.4f lon=%.4f bat=%.2fV food=%.0f%% gps=%d cycle=%s gate=%d bocina_s=%.1f rem_min=%.1f ap_min=%.1f alt=%.1fcm disp=%d pwr=%d sched=%s",
+                     dev_id, (rem_type == 1) ? "Compuerta" : "Repetidor", rem_lat, rem_lon, rem_bat, rem_food, rem_gps, cycle_str.c_str(), rem_gate, rem_bocina_secs, rem_time_left, rem_tiempo_apertura, rem_altura_repositorio, rem_display_status, rem_power_status, rem_horarios.c_str());
+
+            auto& devices = lora_custom::get_last_seen_devices();
+            bool was_online = false;
+            if (devices.find(dev_id) != devices.end()) {
+              was_online = devices[dev_id].online;
+            }
+
+            lora_custom::DeviceInfo info;
+            info.last_seen_time = millis() / 1000;
+            info.type = rem_type;
+            info.food_pct = rem_food;
+            info.routine_state = cycle_str;
+            info.online = true;
+            devices[dev_id] = info;
+
+            // Si somos gateway y MQTT está conectado, publicamos!
+            if (id(gateway_mode).state && id(mqtt_client).is_connected()) {
+              // Publicar estado ONLINE si antes estaba offline
+              if (!was_online) {
+                char status_topic[64];
+                snprintf(status_topic, sizeof(status_topic), "%s/status", dev_id);
+                id(mqtt_client).publish(status_topic, std::string("online"), 0, true);
+                ESP_LOGI("mqtt_gateway", "Publicado estado ONLINE [%s]: online", status_topic);
+              }
+
+              char topic[64];
+              snprintf(topic, sizeof(topic), "%s/telemetry", dev_id);
+
+              std::string type_str = (rem_type == 1) ? "compuerta" : "repetidor";
+
+              char payload[600];
+              snprintf(payload, sizeof(payload),
+                       "{\"device_id\":\"%s\",\"device_type\":\"%s\",\"latitude\":%.6f,\"longitude\":%.6f,\"battery\":%.3f,\"food_percentage\":%.1f,\"gps_enabled\":%d,\"routine_state\":\"%s\",\"gate_state\":%d,\"bocina_seconds\":%.1f,\"time_left_alimenta\":%.1f,\"tiempo_apertura_min\":%.1f,\"altura_repositorio\":%.1f,\"display_status\":%d,\"power_status\":%d,\"horarios\":\"%s\",\"lora_rssi\":%.1f,\"lora_snr\":%.1f}",
+                       dev_id, type_str.c_str(), 
+                       std::isnan(rem_lat) ? 0.0 : rem_lat, 
+                       std::isnan(rem_lon) ? 0.0 : rem_lon, 
+                       std::isnan(rem_bat) ? 0.0 : rem_bat, 
+                       std::isnan(rem_food) ? 0.0 : rem_food, 
+                       rem_gps, cycle_str.c_str(), rem_gate, 
+                       std::isnan(rem_bocina_secs) ? 0.0 : rem_bocina_secs, 
+                       std::isnan(rem_time_left) ? 0.0 : rem_time_left,
+                       std::isnan(rem_tiempo_apertura) ? 0.0 : rem_tiempo_apertura,
+                       std::isnan(rem_altura_repositorio) ? 0.0 : rem_altura_repositorio,
+                       rem_display_status, rem_power_status,
+                       rem_horarios.c_str(),
+                       rssi, snr);
+              
+              id(mqtt_client).publish(topic, payload);
+              ESP_LOGI("mqtt_gateway", "Publicado en MQTT [%s]: %s", topic, payload);
+
+            } else if (id(gateway_mode).state) {
+
+              ESP_LOGD("mqtt_gateway", "MQTT no conectado, telemetría de %s no publicada", dev_id);
+            }
+
+            // Repetir el paquete para ampliar cobertura (anti-loop incluido)
+            if (should_repeat(x)) {
+              id(sx_module).transmit_packet(x);
+              ESP_LOGI("repeater", "Telemetría de compuerta repetida.");
+            }
+            return;
+          }
+
+          // ── Comandos de control (el repetidor los reenvía hacia la compuerta) ──
+          if (cmd != CMD_TELEMETRY) {
+            if (should_repeat(x)) {
+              id(sx_module).transmit_packet(x);
+              ESP_LOGI("repeater", "Comando 0x%02X repetido hacia la compuerta.", cmd);
+            }
+            return;
+          }
+
+          ESP_LOGW("lora_rx", "CMD desconocido: 0x%02X", cmd);
+
+# GNSS UART
+uart:
+  id: uart_gnss
+  tx_pin: GPIO34 # GNSS_RX
+  rx_pin: GPIO33 # GNSS_TX
+  baud_rate: 115200
+
+# GPS Component
+gps:
+  latitude:
+    name: "Latitude"
+    id: htit_gnss_latitude
+  longitude:
+    name: "Longitude"
+    id: htit_gnss_longitude
+  altitude:
+    name: "Altitude"
+    id: htit_gnss_altitude
+  speed:
+    name: "Speed"
+    id: htit_gnss_speed
+  course:
+    name: "Course"
+    id: htit_gnss_course
+  satellites:
+    name: "Satellites"
+    id: htit_gnss_satellites
+  hdop:
+    name: "HDOP"
+    id: htit_gnss_hdop
+  update_interval: 5s
+
+# Buttons
+button:
+  - platform: restart
+    name: "Restart"
+  - platform: shutdown
+    name: "Shutdown"
+  - platform: safe_mode
+    name: "Safe Mode Boot"
+  - platform: output
+    id: reset_gnss
+    name: "Reset GNSS"
+    output: gnss_rst_output
+    duration: 1ms
+    entity_category: config
+  - platform: template
+    name: "Test LoRa TX"
+    icon: "mdi:radio-tower"
+    on_press:
+      then:
+        - lambda: |-
+            using namespace lora_custom;
+            // Envia un paquete de prueba (ping) con magic correcto
+            std::vector<uint8_t> pkt = {LORA_MAGIC_0, LORA_MAGIC_1, 0xFF};
+            id(sx_module).transmit_packet(pkt);
+            ESP_LOGI("test", "Paquete de prueba enviado.");
+
+# User button
+binary_sensor:
+  - platform: gpio
+    id: user_button
+    name: "USER Button"
+    pin:
+      number: GPIO0
+      mode: INPUT_PULLUP
+      inverted: true
+    on_press:
+      - if:
+          condition:
+            wifi.enabled:
+          then:
+            - wifi.disable:
+            - lambda: |-
+                id(wifi_is_enabled) = false;
+            - logger.log: "WiFi Deshabilitado por Botón Físico"
+          else:
+            - wifi.enable:
+            - lambda: |-
+                id(wifi_is_enabled) = true;
+            - logger.log: "WiFi Habilitado por Botón Físico"
+
+# packet_transport eliminado: ahora usamos protocolo LoRa custom (0xAB/0xCD)
+
+# Text Sensors (WiFi info)
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+      id: wifi_ip
+    ssid:
+      name: "SSID"
+      id: wifi_ssid_sensor

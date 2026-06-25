@@ -1,0 +1,661 @@
+substitutions:
+  dev_name: "${DEVICE_NAME}"
+  dev_friendly_name: "${DEVICE_NAME}"
+  dev_prefix: "${DEVICE_PREFIX}" # Prefijo para entidades
+  wifi_dev_ssid: "${WIFI_SSID}" 
+  wifi_dev_pass: "${WIFI_PASSWORD}"
+  mqtt_host: "${MQTT_HOST}"
+  mqtt_port: "${MQTT_PORT}"
+  mqtt_user: "${MQTT_USERNAME}"
+  mqtt_pass: "${MQTT_PASSWORD}"
+  
+  # Pines Hardware
+  pin_ph: "34"
+  pin_tds: "32"
+  pin_rele_libre: "2"      # R1 (K1) - Disponible (Antes TDS)  
+  pin_rele_ph_down: "15"  # R2 (K2) - Bomba PH Down
+  pin_rele_ec_up: "5"     # R3 (K3) - Bomba EC Up (Nutrientes)
+  pin_rele_recirc: "4"    # R4 (K4) - Bomba Recirculadora
+  pin_temp_agua: "13"     # Sensor DS18B20 (Puerto Temp/Hum)
+  pin_humedad_suelo: "33" # Sensor Capacitivo Humedad (Antes 35/A4, Ahora 33/A2)
+  version_number: "V1.0.0" # Variable de versión
+
+esphome:
+  name: ${dev_name}
+  friendly_name: ${dev_friendly_name}
+  
+  on_boot: # <-- CORRECCIÓN: Inicialización de todos los text_sensor aquí
+    priority: -100
+    then:
+      - text_sensor.template.publish:
+          id: system_status
+          state: "Listo"
+      - text_sensor.template.publish:
+          id: riego_estado
+          state: "esperando"
+
+      - text_sensor.template.publish: # <-- Inicialización de la versión
+          id: firmware_version
+          state: ${version_number}
+          
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+wifi:
+  ssid: ${wifi_dev_ssid}
+  password: ${wifi_dev_pass}
+  power_save_mode: none
+  ap:
+    ssid: "${dev_friendly_name} Fallback"
+    password: "admin_rescue_me"
+
+mqtt:
+  broker: ${mqtt_host}
+  port: ${mqtt_port}
+  username: ${mqtt_user}
+  password: ${mqtt_pass}
+  keepalive: 120s
+  reboot_timeout: 120s
+  discovery: false
+
+one_wire:
+  - platform: gpio
+    pin: ${pin_temp_agua}
+  
+api:
+
+web_server:
+  port: 80
+
+ota:
+  - platform: esphome
+logger:
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "America/Argentina/Buenos_Aires"
+    
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: /1 
+        then:
+          - script.execute: riego_check_hourly
+
+# =================================================
+# GLOBALS (ÚLTIMO TIEMPO DE DOSIFICACIÓN)
+# =================================================
+globals:
+  - id: g_last_dose_time
+    type: int
+    initial_value: '0'
+    restore_value: true
+
+  - id: g_ph_accum
+    type: float
+    initial_value: '0.0'
+    restore_value: false
+
+  - id: g_ec_accum
+    type: float
+    initial_value: '0.0'
+    restore_value: false
+
+  - id: g_sample_count
+    type: int
+    initial_value: '0'
+    restore_value: false
+
+  - id: g_ph_dose_time
+    type: float
+    initial_value: '0.0'
+    restore_value: false
+
+  - id: g_ec_dose_time
+    type: float
+    initial_value: '0.0'
+    restore_value: false
+
+text_sensor:
+  - platform: template
+    name: "${dev_prefix} label sistema estado"
+    id: system_status
+    update_interval: 10s
+    icon: "mdi:progress-check"
+
+  - platform: template 
+    name: "${dev_prefix} label riego estado"
+    id: riego_estado
+    update_interval: 10s
+    icon: "mdi:water-sync"
+
+
+    
+  - platform: template 
+    name: "${dev_prefix} label sistema version"
+    id: firmware_version # <-- Sin initial_value, solo definición
+    icon: "mdi:tag"
+    
+# =================================================
+# VARIABLES DE CONTROL Y CALIBRACIÓN
+# =================================================
+number:
+  - platform: template
+    name: "${dev_prefix} config ph calib 7" 
+    id: ph_voltaje_7      
+    optimistic: true
+    min_value: 0.0
+    max_value: 5.0
+    step: 0.01
+    initial_value: 2.61
+    restore_value: true
+
+  - platform: template
+    name: "${dev_prefix} config ph calib 4" 
+    id: ph_voltaje_4      
+    optimistic: true
+    min_value: 0.0
+    max_value: 5.0
+    step: 0.01
+    initial_value: 3.09
+    restore_value: true
+
+  - platform: template
+    name: "${dev_prefix} config ec offset aire"
+    id: cal_tds_offset
+    optimistic: true
+    min_value: 0.0
+    max_value: 1.0
+    step: 0.01
+    initial_value: 0.27
+    restore_value: true
+
+  - platform: template
+    name: "${dev_prefix} config ec factor" 
+    id: ec_factor      
+    optimistic: true
+    min_value: 100.0
+    max_value: 5000.0
+    step: 1.0
+    initial_value: 3120.0
+    restore_value: true
+
+  - platform: template
+    name: "${dev_prefix} config ph limite" 
+    id: ph_limite       
+    optimistic: true
+    min_value: 5.0
+    max_value: 8.0
+    step: 0.1
+    initial_value: 6.5
+    restore_value: true
+
+  - platform: template
+    name: "${dev_prefix} config ec limite" 
+    id: ec_limite       
+    optimistic: true
+    min_value: 100.0
+    max_value: 5000.0
+    step: 10.0
+    initial_value: 1000.0
+    restore_value: true
+
+
+
+
+
+  - platform: template
+    name: "${dev_prefix} config humedad umbral"
+    id: umbral_humedad_riego
+    optimistic: true
+    min_value: 0.0
+    max_value: 100.0
+    step: 1.0
+    initial_value: 50.0
+    restore_value: true
+
+  - platform: template 
+    name: "${dev_prefix} config riego minutos"
+    id: minutos_riego
+    optimistic: true
+    min_value: 1.0
+    max_value: 60.0
+    step: 1.0
+    initial_value: 10.0 
+    restore_value: true
+
+  - platform: template
+    name: "${dev_prefix} config otros litros tanque"
+    id: cantidad_litros_tanque
+    optimistic: true
+    min_value: 0
+    max_value: 5000
+    step: 1
+    initial_value: 200
+    restore_value: true
+
+  - platform: template
+    name: "${dev_prefix} config ph dosis ml/l"
+    id: ph_mm_reduce_dosifica
+    optimistic: true
+    min_value: 0.0
+    max_value: 50.0
+    step: 0.1
+    initial_value: 1.0
+    restore_value: true
+
+  - platform: template
+    name: "${dev_prefix} config ec dosis ml/l"
+    id: ec_mm_aumenta_dosifica
+    optimistic: true
+    min_value: 0.0
+    max_value: 50.0
+    step: 0.1
+    initial_value: 1.0
+    restore_value: true
+
+  - platform: template
+    name: "${dev_prefix} config bombas flujo"
+    id: bombas_dosificadoras_mm_por_minuto
+    optimistic: true
+    min_value: 1.0
+    max_value: 500.0
+    step: 1.0
+    initial_value: 100.0
+    restore_value: true
+
+
+# =================================================
+# BOTONES Y SWITCHES DE DOSIFICACIÓN Y RIEGO
+# =================================================
+button:
+  - platform: template
+    name: "${dev_prefix} action ph calibrar 7"
+    on_press:
+      - script.execute: calibrate_ph7
+    icon: "mdi:ph-7"
+
+  - platform: template
+    name: "${dev_prefix} action ph calibrar 4"
+    on_press:
+      - script.execute: calibrate_ph4
+    icon: "mdi:ph-4"
+    
+  - platform: template
+    name: "${dev_prefix} action ph dosificar"
+    on_press:
+      - script.execute: dose_ph_down
+    icon: "mdi:beaker-minus-outline"
+    
+  - platform: template
+    name: "${dev_prefix} action ec dosificar"
+    on_press:
+      - script.execute: dose_ec_up
+    icon: "mdi:beaker-plus-outline"
+      
+  - platform: template
+    name: "${dev_prefix} action riego iniciar" 
+    on_press:
+      - script.execute: riego_run_sequence
+    icon: "mdi:water-pump"
+    
+  - platform: restart
+    name: "${dev_prefix} action sistema reiniciar"
+    icon: "mdi:restart"
+
+  - platform: template
+    name: "${dev_prefix} action solucion chequear"
+    on_press:
+      - script.execute: chequeoSolucion
+    icon: "mdi:test-tube"
+
+switch:
+
+
+  - platform: gpio
+    pin: ${pin_rele_ph_down}
+    id: ph_down_pump
+    name: "${dev_prefix} action ph bomba"
+    restore_mode: ALWAYS_OFF
+    
+  - platform: gpio
+    pin: ${pin_rele_ec_up}
+    id: ec_up_pump
+    name: "${dev_prefix} action ec bomba"
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    pin: ${pin_rele_recirc}
+    id: recirc_pump
+    name: "${dev_prefix} action riego bomba"
+    restore_mode: ALWAYS_OFF
+
+
+# =================================================
+# INTERVALO DE LECTURA (Fijo)
+# =================================================
+interval:
+  - id: daily_check_interval
+    interval: 24h
+    then:
+      - script.execute: chequeoSolucion
+
+
+
+
+
+# =================================================
+# SCRIPTS DE EJECUCIÓN Y CONTROL
+# =================================================
+script:
+  # --- 1. LECTURA SECUENCIAL DE SENSORES ---
+  - id: leer_sensores_sin_conflicto
+    then:
+      - component.update: ph_voltage
+      - delay: 2s
+      - component.update: tds_voltage
+      - delay: 1s
+      - component.update: ph_value
+      - component.update: tds_ppm
+      - component.update: ec_value
+
+  # --- A. DOSIFICACIÓN PH DOWN (SUB-SCRIPT) ---
+  - id: dose_ph_down
+    then:
+      - lambda: |-
+          id(system_status).publish_state("Dosificando PH");
+      - switch.turn_on: ph_down_pump
+      - delay: 5s
+      - switch.turn_off: ph_down_pump
+      - lambda: |-
+          id(g_last_dose_time) = id(sntp_time).now().timestamp;
+          id(system_status).publish_state("Listo");
+          
+  # --- B. DOSIFICACIÓN EC UP (SUB-SCRIPT) ---
+  - id: dose_ec_up
+    then:
+      - lambda: |-
+          id(system_status).publish_state("Dosificando EC");
+      - switch.turn_on: ec_up_pump
+      - delay: 5s
+      - switch.turn_off: ec_up_pump
+      - lambda: |-
+          id(g_last_dose_time) = id(sntp_time).now().timestamp;
+          id(system_status).publish_state("Listo");
+
+  # --- C. BOMBA RECIRCULADORA / RIEGO (SUB-SCRIPT) ---
+  - id: riego_run_sequence 
+    then:
+      - lambda: |-
+          id(riego_estado).publish_state("regando");
+      - switch.turn_on: recirc_pump
+      - delay: !lambda "return id(minutos_riego).state * 60 * 1000;"
+      - switch.turn_off: recirc_pump
+      - lambda: |-
+          id(riego_estado).publish_state("esperando");
+
+  # --- D. CHEQUEO HORARIO DE RIEGO (LÓGICA HUMEDAD) ---
+  - id: riego_check_hourly
+    then:
+      - if:
+          condition:
+            lambda: |-
+              // Verificar si la humedad está por debajo del umbral
+              if (std::isnan(id(humedad_suelo).state)) return false;
+              return id(humedad_suelo).state < id(umbral_humedad_riego).state;
+          then:
+            - script.execute: riego_run_sequence 
+
+
+
+
+  # --- 3. RUTINA INTELIGENTE DE CHEQUEO Y DOSIFICACIÓN ---
+  - id: chequeoSolucion
+    then:
+      # 1. RECIRCULACIÓN INICIAL (5 min)
+      - lambda: id(system_status).publish_state("Recirculando (5min)");
+      - switch.turn_on: recirc_pump
+      - delay: 5min
+      - switch.turn_off: recirc_pump
+
+      # 2. ASENTAMIENTO (5 min)
+      - lambda: id(system_status).publish_state("Esperando Asentamiento (5min)");
+      - delay: 5min
+
+      # 3. MUESTREO (2 min - 12 muestras)
+      - lambda: |-
+          id(system_status).publish_state("Muestreando (2min)");
+          id(g_ph_accum) = 0.0;
+          id(g_ec_accum) = 0.0;
+          id(g_sample_count) = 0;
+      
+      - repeat:
+          count: 12
+          then:
+            - script.execute: leer_sensores_sin_conflicto
+            - delay: 10s
+            - lambda: |-
+                id(g_ph_accum) += id(ph_value).state;
+                id(g_ec_accum) += id(ec_value).state;
+                id(g_sample_count) += 1;
+
+      # 4. CÁLCULO DE DOSIFICACIÓN
+      - lambda: |-
+          if (id(g_sample_count) == 0) return;
+
+          float ph_avg = id(g_ph_accum) / id(g_sample_count);
+          float ec_avg = id(g_ec_accum) / id(g_sample_count);
+          
+          float litros = id(cantidad_litros_tanque).state;
+          float bomba_rate = id(bombas_dosificadoras_mm_por_minuto).state; // ml/min
+          
+          // Cálculo pH (Solo si está por encima del límite)
+          float ph_target = id(ph_limite).state;
+          float ph_factor = id(ph_mm_reduce_dosifica).state; // ml/L (Dosis fija por litro)
+          id(g_ph_dose_time) = 0.0;
+          
+          if (ph_avg > ph_target) {
+            // Lógica de paso fijo solicitada: Factor * Litros
+            // No depende de la diferencia, aplica una dosis estándar cada vez que se detecta desviación.
+            float dose_ml = ph_factor * litros; 
+            id(g_ph_dose_time) = (dose_ml / bomba_rate) * 60.0; // Segundos
+          }
+
+          // Cálculo EC (Solo si está por debajo del límite)
+          // El usuario indicó que ec_limite está en PPM.
+          // El sensor ec_value está en µS/cm (PPM * 2).
+          // Convertimos el objetivo a µS/cm para comparar.
+          float ec_target_ppm = id(ec_limite).state;
+          float ec_target_us = ec_target_ppm * 2.0; 
+          
+          float ec_factor = id(ec_mm_aumenta_dosifica).state; // ml/L (Dosis fija por litro)
+          id(g_ec_dose_time) = 0.0;
+
+          if (ec_avg < ec_target_us) {
+            // Lógica de paso fijo solicitada: Factor * Litros
+            float dose_ml = ec_factor * litros;
+            id(g_ec_dose_time) = (dose_ml / bomba_rate) * 60.0; // Segundos
+          }
+          
+          ESP_LOGD("custom", "Promedios - pH: %.2f, EC: %.0f", ph_avg, ec_avg);
+          ESP_LOGD("custom", "Tiempos Dosis - pH: %.1fs, EC: %.1fs", id(g_ph_dose_time), id(g_ec_dose_time));
+
+      # 5. APLICACIÓN DE DOSIS
+      # A. pH Down
+      - if:
+          condition:
+            lambda: return id(g_ph_dose_time) > 1.0;
+          then:
+            - lambda: id(system_status).publish_state("Dosificando pH...");
+            - switch.turn_on: ph_down_pump
+            - delay: !lambda "return id(g_ph_dose_time) * 1000;"
+            - switch.turn_off: ph_down_pump
+      
+      # B. EC Up
+      - if:
+          condition:
+            lambda: return id(g_ec_dose_time) > 1.0;
+          then:
+            - lambda: id(system_status).publish_state("Dosificando Nutrientes...");
+            - switch.turn_on: ec_up_pump
+            - delay: !lambda "return id(g_ec_dose_time) * 1000;"
+            - switch.turn_off: ec_up_pump
+
+      # 6. MEZCLADO FINAL (Solo si se dosificó)
+      - if:
+          condition:
+            lambda: return (id(g_ph_dose_time) > 1.0 || id(g_ec_dose_time) > 1.0);
+          then:
+            - lambda: id(system_status).publish_state("Mezclando Final (25min)");
+            - switch.turn_on: recirc_pump
+            - delay: 25min
+            - switch.turn_off: recirc_pump
+          else:
+            - lambda: id(system_status).publish_state("Valores OK - Fin");
+
+      - lambda: |-
+          id(g_last_dose_time) = id(sntp_time).now().timestamp;
+          if (id(system_status).state == "Mezclando Final (25min)") {
+             id(system_status).publish_state("Listo (Dosis Aplicada)");
+          }
+
+  # --- SCRIPTS DE CALIBRACIÓN ---
+  - id: calibrate_ph7
+    then:
+      - text_sensor.template.publish:
+          id: system_status
+          state: "Midiendo 7.0 (Estabilizando...)"
+      - component.update: ph_voltage
+      - delay: 1s
+      - lambda: |-
+          float current_v = id(ph_voltage).state;
+          id(ph_voltaje_7).publish_state(current_v); 
+          id(system_status).publish_state("7.0 CALIBRADO! Nuevo V: " + to_string(current_v) + "V. Presiona Reiniciar.");
+
+  - id: calibrate_ph4
+    then:
+      - text_sensor.template.publish:
+          id: system_status
+          state: "Midiendo 4.0 (Estabilizando...)"
+      - component.update: ph_voltage
+      - delay: 1s
+      - lambda: |-
+          float current_v = id(ph_voltage).state;
+          id(ph_voltaje_4).publish_state(current_v); 
+          id(system_status).publish_state("4.0 CALIBRADO! Nuevo V: " + to_string(current_v) + "V. Presiona Reiniciar.");
+
+
+# =================================================
+# SENSORES CON FÓRMULAS DINÁMICAS
+# =================================================
+sensor:
+  - platform: adc
+    id: ph_voltage
+    pin: ${pin_ph}
+    name: "${dev_prefix} label ph voltaje"
+    update_interval: never 
+    attenuation: 12db
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+
+  - platform: template
+    name: "${dev_prefix} label ph valor"
+    id: ph_value
+    update_interval: never
+    unit_of_measurement: "pH"
+    icon: "mdi:ph"
+    lambda: |-
+      float v_leido = id(ph_voltage).state;
+      float v7 = id(ph_voltaje_7).state; 
+      float v4 = id(ph_voltaje_4).state; 
+      
+      if (abs(v4 - v7) < 0.01) return 7.0;
+
+      float pendiente = (4.0 - 7.0) / (v4 - v7);
+      return 7.0 + pendiente * (v_leido - v7);
+
+  - platform: adc
+    id: tds_voltage
+    pin: ${pin_tds}
+    name: "${dev_prefix} label ec voltaje"
+    update_interval: never
+    attenuation: 12db
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+
+  - platform: template
+    name: "${dev_prefix} label ec ppm"
+    id: tds_ppm
+    update_interval: never
+    unit_of_measurement: "ppm"
+    icon: "mdi:water-percent"
+    lambda: |-
+      float v = id(tds_voltage).state;
+      float offset = id(cal_tds_offset).state;
+      float factor = id(ec_factor).state; 
+      float temp = id(temp_agua).state;
+
+      if (std::isnan(v) || v <= (offset + 0.01)) { return 0.0; }
+
+      // Si la temperatura no es válida, usar 25°C por defecto
+      if (std::isnan(temp)) { temp = 25.0; }
+      
+      float raw_val = (v - offset) * factor;
+      float compensation = 1.0 + 0.02 * (temp - 25.0);
+
+      return raw_val / compensation; 
+
+  - platform: template
+    name: "${dev_prefix} label ec uS"
+    id: ec_value
+    update_interval: never
+    unit_of_measurement: "µS/cm"
+    icon: "mdi:flash-outline"
+    lambda: |-
+      if (std::isnan(id(tds_ppm).state)) { return 0.0; }
+      return id(tds_ppm).state * 2.0;
+
+  - platform: dallas_temp
+
+    name: "${dev_prefix} label temp agua"
+    id: temp_agua
+    update_interval: 60min
+    unit_of_measurement: "°C"
+    icon: "mdi:thermometer"
+
+  - platform: adc
+    pin: ${pin_humedad_suelo}
+    name: "${dev_prefix} label humedad voltaje"
+    id: humedad_voltaje_raw
+    update_interval: 20min
+    attenuation: 11db
+    icon: "mdi:flash"
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+
+  - platform: template
+    name: "${dev_prefix} label humedad porcentaje"
+    id: humedad_suelo
+    update_interval: 20min
+    unit_of_measurement: "%"
+    icon: "mdi:water-percent"
+    lambda: |-
+      float v = id(humedad_voltaje_raw).state;
+      if (std::isnan(v)) return 0.0;
+      // Calibración Lineal Manual (0.73V -> 0%, 0.41V -> 100%)
+      // y = mx + b
+      // m = (100 - 0) / (0.41 - 0.73) = 100 / -0.32 = -312.5
+      // b = 0 - (-312.5 * 0.73) = 228.125
+      float pct = -312.5 * v + 228.125;
+
+      if (pct < 0) return 0.0;
+      if (pct > 100) return 100.0;
+      return pct;
