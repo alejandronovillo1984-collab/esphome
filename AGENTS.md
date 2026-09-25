@@ -10,6 +10,11 @@ Guía para trabajar en este repositorio ESPHome.
 - `templatesWeb/` — plantillas HTML/guías de configuración web.
 - `docker-compose.yaml` — servicio ESPHome (dashboard en host network).
 
+## Git / GitHub
+
+- Push al repo `alejandronovillo1984-collab/esphome` por HTTPS.
+- Las credenciales de GitHub están en `~/.git-credentials` (helper `credential.helper store`, chmod 600). **No** guardarlas en este repo ni en AGENTS.md.
+
 ## Flasheo por USB
 
 La placa se conecta por USB y aparece como `/dev/ttyUSB0`.
