@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Forrajero Hídropónico | Rutina de Riego, Variables y Conexionado</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    line-height: 1.6;
+    padding: 24px;
+  }
+  .container { max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 1.8rem; margin-bottom: 4px; }
+  .subtitle { color: #94a3b8; margin-bottom: 24px; }
+  h2 {
+    font-size: 1.25rem;
+    margin: 32px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #334155;
+    color: #38bdf8;
+  }
+  h3, h4 { color: #38bdf8; margin: 12px 0 8px; }
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid #334155;
+    font-size: 0.9rem;
+  }
+  th { color: #94a3b8; font-weight: 600; }
+  code {
+    background: #0f172a;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.85rem;
+    color: #fbbf24;
+  }
+  pre {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    font-family: 'Consolas', monospace;
+    font-size: 0.85rem;
+    color: #86efac;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .pin-table td:first-child, .pin-table td:nth-child(2) { font-weight: 700; }
+  .pin-hc { color: #f472b6; font-weight: 700; }
+  .pin-esp { color: #38bdf8; font-weight: 700; }
+  .topic { color: #fbbf24; }
+  .tag {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-left: 8px;
+  }
+  .tag-write { background: #166534; color: #bbf7d0; }
+  .tag-read { background: #3730a3; color: #c7d2fe; }
+  .warning {
+    background: #7f2d0f;
+    border: 1px solid #f55e1f;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    color: #fed7aa;
+  }
+  .info {
+    background: #164e63;
+    border: 1px solid #22d3ee;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    color: #cffafe;
+  }
+  ul, ol { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .phase-tag {
+    display:inline-block; padding:3px 12px; border-radius:999px;
+    font-size:.8rem; font-weight:700;
+  }
+  .phase-1 { background:#7f1d1d; color:#fecaca; }
+  .phase-2 { background:#14532d; color:#bbf7d0; }
+  .phase-3 { background:#3730a3; color:#c7d2fe; }
+  .phase-4 { background:#7c2d12; color:#fed7aa; }
+  .phase-5 { background:#4a044e; color:#f0abfc; }
+  .hl { color:#38bdf8; font-weight:700; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🌱 Forrajero Hídropónico — Guía de Funcionamiento</h1>
+  <p class="subtitle">Dispositivo: <code>forrajero</code> (Kincony KC868-A4) · Broker: <code>mqtt.petraka.com.ar:1883</code> · Firmware: ESPHome 2025.9.1</p>
+
+  <div class="warning">
+    ⚠️ <strong>Configuración por defecto:</strong> el equipo apunta a la red <code>redOficina</code> y al broker
+    <code>mqtt.petraka.com.ar</code>. Todos los valores (WiFi, MQTT, pins) se definen como <strong>substitutions</strong>
+    en el archivo <code>config/forrajero.yaml</code> y se editan desde el <strong>dashboard de ESPHome</strong>.
+  </div>
+
+  <h2>1. Conexionado del hardware (Kincony KC868-A4)</h2>
+  <div class="card">
+    <div class="info">
+      💡 <strong>Placa:</strong> Kincony KC868-A4 (rev1.2.5) con ESP32 y <strong>4 relés</strong> a bordo.
+      Los relés se controlan por GPIO y son de <strong>activo alto</strong> (<code>inverted: false</code>), sin opto adicional.
+    </div>
+    <table class="pin-table">
+      <tr><th>Válvula / Función</th><th>Relé de la placa</th><th>Pin GPIO ESP32</th><th>Nota</th></tr>
+      <tr>
+        <td>Válvula 1 — Agua</td>
+        <td class="pin-hc">K4 (R4)</td>
+        <td class="pin-esp">GPIO 4</td>
+        <td>Agua en cada riego</td>
+      </tr>
+      <tr>
+        <td>Válvula 2 — Sanitizante</td>
+        <td class="pin-hc">K2 (R2)</td>
+        <td class="pin-esp">GPIO 15</td>
+        <td>Solo 1 vez por día, 1er ciclo (1s)</td>
+      </tr>
+      <tr>
+        <td>K1 (R1) — <em>sin uso</em></td>
+        <td class="pin-hc">K1 (R1)</td>
+        <td class="pin-esp">GPIO 2</td>
+        <td>Reserva / disponible</td>
+      </tr>
+      <tr>
+        <td>K3 (R3) — <em>sin uso</em></td>
+        <td class="pin-hc">K3 (R3)</td>
+        <td class="pin-esp">GPIO 5</td>
+        <td>Reserva / disponible</td>
+      </tr>
+      <tr>
+        <td>Alimentación placa</td>
+        <td>12–24 ADC / USB</td>
+        <td class="pin-esp">—</td>
+        <td>Los relés conmutan la carga exterior (bombas/electroválvulas 220V o 12V con fuente propia)</td>
+      </tr>
+    </table>
+    <p style="margin-top:12px; color:#94a3b8; font-size:0.85rem;">
+      ⚡ <strong>Cómo se conecta una válvula:</strong> cada relé es un contactor — ponés la fase/positivo de tu carga en el borne
+      <strong>COM</strong> del relé y el cable que va a la electroválvula (o bomba) en el borne <strong>NO</strong> (Normal Abierto).
+      Así, cuando el relé se activa, la carga queda alimentada y la válvula abre.
+    </p>
+    <p style="margin-top:8px; color:#94a3b8; font-size:0.85rem;">
+      🔌 <strong>Nota pins:</strong> esta placa usa los GPIO <code>2, 15, 5, 4</code> para sus 4 relés (pinout oficial Kincony KC868-A4).
+      En este firmware: <strong>Agua = K4 (GPIO 4)</strong>, <strong>Sanitizante = K2 (GPIO 15)</strong>. K1 y K3 quedan libres como reserva.
+    </p>
+
+    <h3>Rutina de riego utilizada</h3>
+    <ul>
+      <li><strong>Sanitizante:</strong> solo se inyecta <u>1 vez por día</u>, en el primer ciclo de riego del día (1 segundo). El resto de riegos del día son <strong>solo agua</strong>.</li>
+      <li><strong>Nutrientes:</strong> <em>sin uso</em> en esta configuración (relé K3 no se activa). Si más adelante querés dosificar, cableá la bomba de nutrientes al relé libre y sumá la lógica en el script.</li>
+      <li><strong>Agua:</strong> se abre en cada riego; la duración depende de la fase del día y del <strong>índice de intensidad</strong> (ver tabla de recetas).</li>
+    </ul>
+  </div>
+
+  <h2>2. ¿Cómo funciona la rutina de riego?</h2>
+  <div class="card">
+    <p>
+      El sistema maneja un <strong>ciclo de 14 días</strong> de forraje verde hídropónico. Cada día tiene una
+      <strong>fase distinta</strong> del cultivo, con su propia <strong>frecuencia de riego</strong> (cada cuántos minutos se riega)
+      y su <strong>receta de válvulas</strong> (cuántos segundos abre cada una). Un <strong>índice de intensidad</strong> global
+      (0–10) permite ajustar ambos parámetros en vivo.
+    </p>
+    <ol>
+      <li>El módulo <code>time (sntp)</code> revisa el reloj <strong>cada minuto</strong>.</li>
+      <li>Si <code>sistema_activo</code> está en <code>true</code>, calcula si el minuto actual es <strong>múltiplo del intervalo</strong> de ese día (ej. cada 90 min).</li>
+      <li>Si coincide, ejecuta el script <strong><code>ejecutar_riego</code></strong>, que abre las válvulas según la receta del día.</li>
+      <li>A las <strong>00:00</strong>, si el sistema está activo, avanza <code>dia_actual</code>. Cuando pasa el día 14, apaga el ciclo solo.</li>
+    </ol>
+    <div class="info">
+      💡 El reloj se sincroniza por <strong>NTP</strong> y se hace <strong>backup del epoch</strong> en flash (<code>g_last_epoch</code>).
+      Si se corta la luz y vuelve sin internet, el ESP restaura la última hora conocida y <u>sigue regando igual</u>.
+    </div>
+  </div>
+
+  <h3>2.1 Fases del ciclo y frecuencia de riego</h3>
+  <div class="card">
+    <table>
+      <tr><th>Día</th><th>Fase</th><th>Intervalo de riego</th><th>Riegos/día aprox.</th></tr>
+      <tr><td>1</td><td><span class="phase-tag phase-1">Hidratación / Siembra</span></td><td>cada 180 min</td><td>8</td></tr>
+      <tr><td>2 – 3</td><td><span class="phase-tag phase-2">Germinación</span></td><td>cada 120 min</td><td>12</td></tr>
+      <tr><td>4 – 6</td><td><span class="phase-tag phase-3">Inicio de Crecimiento</span></td><td>cada 120 min</td><td>12</td></tr>
+      <tr><td>7 – 12</td><td><span class="phase-tag phase-4">Crecimiento Máximo</span></td><td>cada 90 min</td><td>16</td></tr>
+      <tr><td>13 – 14</td><td><span class="phase-tag phase-5">Lavado / Cosecha</span></td><td>cada 180 min</td><td>8</td></tr>
+    </table>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
+      El check se hace sobre <code>minuto_del_día % intervalo == 0</code>. Como arranca en el minuto 0, el primer riego cae a las 00:00
+      y luego en los múltiplos siguientes. <u>Esto incluye el riego de medianoche</u> (una vez por día) que ayuda a mantener la humedad de arranque.
+    </p>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
+      ⭐ <strong>Índice de intensidad &gt; 0:</strong> estos intervalos se <u>acortan</u> <code>15&nbsp;min × índice</code>
+      (mínimo 30 min). Por ejemplo, la fase de 90&nbsp;min con índice 2 → <strong>60&nbsp;min</strong>. Ver sección Índice de Intensidad.
+    </p>
+  </div>
+
+  <h3>2.2 Receta de válvulas por día (duración en segundos)</h3>
+  <div class="card">
+    <table>
+      <tr><th>Día</th><th>V1 — Agua (K4)</th><th>V2 — Sanitizante (K2)</th></tr>
+      <tr><td>1</td><td>5 s + índice</td><td>1 s (solo 1° ciclo)</td></tr>
+      <tr><td>2 – 3</td><td>8 s + índice</td><td>1 s (solo 1° ciclo)</td></tr>
+      <tr><td>4 – 6</td><td>10 s + índice</td><td>1 s (solo 1° ciclo)</td></tr>
+      <tr><td>7 – 10</td><td>12 s + índice</td><td>1 s (solo 1° ciclo)</td></tr>
+      <tr><td>11 – 12</td><td>14 s + índice</td><td>1 s (solo 1° ciclo)</td></tr>
+      <tr><td>13 – 14</td><td>10 s + índice</td><td>1 s (solo 1° ciclo)</td></tr>
+    </table>
+    <p style="margin-top:10px; color:#94a3b8; font-size:.85rem;">
+      📌 <strong>Regla del sanitizante:</strong> la V2 solo se inyecta en el <strong>primer ciclo del día</strong>
+      (<code>ciclos_hoy == 1</code>) por 1 segundo, para desinfectar el sistema <u>una sola vez al día</u>.
+      El resto de riegos del día son <strong>solo agua</strong>.
+    </p>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
+      ⚙️ <strong>Nutrientes desactivados:</strong> esta versión no usa la válvula de nutrientes (K3 queda libre). Los tiempos de agua
+      suben lentamente a lo largo del crecimiento y <strong>bajan en el lavado final</strong> (días 13–14), dejando solo agua limpia para la cosecha.
+    </p>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
+      💧 El sufijo <strong><code>+ índice</code></strong> indica que a la duración base se le suman
+      <code>2&nbsp;segundos × índice de intensidad</code> (ver sección Índice de intensidad).
+    </p>
+  </div>
+
+  <h2>3. Variables que usa la rutina</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>🧠 Globals (persistidos en flash)</h3>
+      <table>
+        <tr><th>Variable</th><th>Tipo</th><th>Significado</th></tr>
+        <tr><td><code>dia_actual</code></td><td>int</td><td>Día del ciclo (0 = detenido, 1 a 14 = en curso)</td></tr>
+        <tr><td><code>ciclos_hoy</code></td><td>int</td><td>Cuántos riegos ya se hicieron hoy</td></tr>
+        <tr><td><code>sistema_activo</code></td><td>bool</td><td>ON/OFF del ciclo completo</td></tr>
+        <tr><td><code>g_last_epoch</code></td><td>uint32</td><td>Última hora válida (backup para arranque sin NTP)</td></tr>
+        <tr><td><code>global_indice_intensidad</code></td><td>int</td><td>Índice de intensidad de riego (0–10, se guarda en flash)</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>⚙️ Substitutions (del dashboard)</h3>
+      <table>
+        <tr><th>Variable</th><th>Valor típico</th></tr>
+        <tr><td><code>${DEVICE_NAME}</code></td><td><code>forrajero</code></td></tr>
+        <tr><td><code>${WIFI_SSID}</code></td><td>red WiFi del lugar</td></tr>
+        <tr><td><code>${WIFI_PASSWORD}</code></td><td>clave WiFi</td></tr>
+        <tr><td><code>${MQTT_HOST}</code></td><td><code>mqtt.petraka.com.ar</code></td></tr>
+        <tr><td><code>${MQTT_PORT}</code></td><td><code>1883</code></td></tr>
+        <tr><td><code>${MQTT_USERNAME}</code> / <code>${MQTT_PASSWORD}</code></td><td>credenciales broker</td></tr>
+        <tr><td><code>pin_v1</code> / <code>pin_v2</code></td><td><code>4</code> (K4/Agua) / <code>15</code> (K2/Sanitiza)</td></tr>
+        <tr><td><code>zona_horaria</code></td><td><code>America/Argentina/Buenos_Aires</code></td></tr>
+      </table>
+    </div>
+  </div>
+
+  <h3>Variables internas del script <code>ejecutar_riego</code></h3>
+  <div class="card">
+    <table>
+      <tr><th>Variable</th><th>Rol</th></tr>
+      <tr><td><code>d</code></td><td>Día actual (se copia de <code>dia_actual</code>)</td></tr>
+      <tr><td><code>ciclo</code></td><td>Número de riego de hoy (se copia de <code>ciclos_hoy</code> tras incrementarlo)</td></tr>
+      <tr><td><code>idx</code></td><td>Índice de intensidad (copy del global) — suma 2 s de agua por pasada y acorta el intervalo</td></tr>
+      <tr><td><code>t_v1</code> / <code>t_v2</code></td><td>Segundos que estará abierta cada válvula en esta pasada (Agua / Sanitizante)</td></tr>
+      <tr><td><code>interval_mins</code></td><td>Minutos entre riegos según el día (en el módulo <code>time</code>)</td></tr>
+      <tr><td><code>min_of_day</code></td><td>Minuto del día (0–1439) para el cálculo del disparo</td></tr>
+    </table>
+  </div>
+
+  <h3>Control manual de la fase (novedad del ciclo)</h3>
+  <div class="card">
+    <p>
+      El número <strong><code>Día Actual (Manual)</code></strong> deja saltear o retroceder de fase al instante:
+    </p>
+    <ul>
+      <li>Setear <code>1 – 14</code> → pone ese día y <strong>activa</strong> el sistema.</li>
+      <li>Setear <code>0</code> → <strong>detiene</strong> el ciclo.</li>
+    </ul>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
+      Ejemplo: si querés empezar directo en la fase de crecimiento, poné <code>Día Actual = 4</code> y el sistema
+      comenzará a regar con la receta de los días 4–6.
+    </p>
+  </div>
+
+  <h2>4. Control desde la web / MQTT / Home Assistant</h2>
+  <div class="card">
+    <p>
+      El device expone (por <code>web_server</code> en el puerto <code>80</code>, por la <code>api</code> de Home Assistant
+      y por MQTT) estas entidades:
+    </p>
+    <table>
+      <tr><th>Entidad</th><th>ID</th><th>Función</th></tr>
+      <tr><td>Switch<br><code>Iniciar / Detener Ciclo</code></td><td><code>switch_iniciar_ciclo</code></td><td>ON → arranca día 1 · OFF → detiene</td></tr>
+      <tr><td>Number<br><code>Día Actual (Manual)</code></td><td><code>set_dia_actual</code></td><td>Saltear de fase / detener (0–15)</td></tr>
+      <tr><td>Number<br><code>Índice Intensidad Riego</code></td><td><code>indice_intensidad</code></td><td>Slider 0–10 que hace el riego más intenso</td></tr>
+      <tr><td>Switch<br><code>Válvula 1 (Agua)</code> / <code>Válvula 2 (Sanitizante)</code></td><td><code>valvula_1</code> / <code>valvula_2</code></td><td>Encendido/apagado manual de cada válvula</td></tr>
+      <tr><td>Text Sensor<br><code>Estado Actual Ciclo</code></td><td><code>estado_actual_texto</code></td><td>Nombre de la fase vigente (o "Detenido")</td></tr>
+      <tr><td>Text Sensor<br><code>hora actual</code></td><td><code>hora_actual_txt</code></td><td>Fecha/hora reportada por el device</td></tr>
+      <tr><td>DateTime<br><code>config fecha hora</code></td><td><code>dt_manual</code></td><td>Seteo manual de fecha/hora (fallback NTP)</td></tr>
+    </table>
+  </div>
+
+  <h3>Tópicos MQTT útiles (prefijo <code class="topic">forrajero-&lt;mac&gt;/</code>)</h3>
+  <div class="card">
+    <table>
+      <tr><th>Acción</th><th>Tópico</th><th>Payload</th></tr>
+      <tr><td>Iniciar ciclo</td><td><code>.../switch/iniciar_/_detener_ciclo_forraje/command</code></td><td><code>ON</code></td></tr>
+      <tr><td>Detener ciclo</td><td>mismo tópico</td><td><code>OFF</code></td></tr>
+      <tr><td>Saltear de día/fase</td><td><code>.../number/dïa_actual_manual/command</code></td><td><code>4</code> (activates), <code>0</code> (detiene)</td></tr>
+      <tr><td>Índice intensidad</td><td><code>.../number/forrajero_indice_intensidad_riego/command</code></td><td><code>0</code>–<code>10</code></td></tr>
+      <tr><td>Válvula agua manual ON</td><td><code>.../switch/válvula_1_agua/command</code></td><td><code>ON</code></td></tr>
+      <tr><td>Válvula sanitizante manual ON</td><td><code>.../switch/válvula_2_sanitizante/command</code></td><td><code>ON</code></td></tr>
+      <tr><td>Leer fase vigente</td><td><code>.../text_sensor/estado_actual_ciclo/state</code></td><td>título de la fase</td></tr>
+      <tr><td>Leer hora</td><td><code>.../text_sensor/forrajero_hora_actual/state</code></td><td><code>YYYY-MM-DD HH:MM:SS</code></td></tr>
+      <tr><td>Setear fecha/hora</td><td><code>.../datetime/forrajero_config_fecha_hora/command</code></td><td><code>2026-09-24 18:30:00</code></td></tr>
+      <tr><td>State / online-offline</td><td><code>.../status</code></td><td><code>online</code> / <code>offline</code></td></tr>
+    </table>
+    <p style="margin-top:10px; font-size:0.85rem; color:#94a3b8;">
+      El prefijo completo es <code>forrajero-&lt;últimos 6 del MAC&gt;/</code> (p. ej. <code>forrajero-65a404/</code>), generado
+      dinámicamente en <code>on_boot</code>. Los nombres exactos de tópicos pueden verse con
+      <code>mosquitto_sub -h mqtt.petraka.com.ar -u alejandro -P '***' -t 'forrajero-65a404/#'</code>.
+    </p>
+  </div>
+
+  <h2>⭐ Índice de Intensidad de Riego</h2>
+  <div class="card">
+    <div class="info">
+      💡 <strong>¿Qué es?</strong> Un slider <strong><code>Índice Intensidad Riego</code></strong> (0 a 10, default <code>0</code>)
+      que modifica el riego en dos ejes: <strong>más frecuencia</strong> y <strong>más agua</strong> por pasada.
+      Se guarda en flash (<code>global_indice_intensidad</code>), así que sobrevive a cortes de luz.
+    </div>
+    <h3>¿Cómo se usa?</h3>
+    <ul>
+      <li><strong>Con 0 (default):</strong> el riego sigue la tabla normal de la fase (frecuencia base + segundos base de agua).</li>
+      <li><strong>Con 1 a 10:</strong> cada punto produce dos efectos:
+        <ol>
+          <li><strong>Más agua por riego:</strong> suma <code>2&nbsp;segundos × índice</code> a la duración de la válvula de agua (V1).
+              Ej.: base 10&nbsp;s con índice 3 → 10 + 6 = <strong>16&nbsp;s</strong> de agua.</li>
+          <li><strong>Más frecuencia:</strong> reduce el intervalo base en <code>15&nbsp;min × índice</code>
+              (mínimo 30 min entre riegos). Ej.: fase de 90&nbsp;min con índice 2 → riega cada <strong>60&nbsp;min</strong>.</li>
+        </ol>
+      </li>
+    </ul>
+    <h3>Ejemplos prácticos de uso</h3>
+    <table>
+      <tr><th>Índice</th><th>Efecto sobre riego de 90 min / 10 s</th><th>Cuándo conviene</th></tr>
+      <tr><td><code>0</code></td><td>cada 90 min · 10 s de agua</td><td>Condiciones normales, otoño/invierno</td></tr>
+      <tr><td><code>1</code></td><td>cada 75 min · 12 s de agua</td><td>Días cálidos, cultivo creciendo rápido</td></tr>
+      <tr><td><code>2</code></td><td>cada 60 min · 14 s de agua</td><td>Verano / calor intenso</td></tr>
+      <tr><td><code>3</code></td><td>cada 45 min · 16 s de agua</td><td>Ola de calor, invernadero cerrado</td></tr>
+      <tr><td><code>4+</code></td><td>cada 30 min (mínimo) · 18+ s de agua</td><td>Rescate de cultivo deshidratado</td></tr>
+    </table>
+    <h3>Setearlo desde MQTT</h3>
+    <pre># Poner intensidad en 3
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P 'tu_password' \
+  -t 'forrajero-65a404/number/forrajero_indice_intensidad_riego/command' -m 3
+
+# Volver a normal (0)
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P 'tu_password' \
+  -t 'forrajero-65a404/number/forrajero_indice_intensidad_riego/command' -m 0</pre>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
+      ⏰ <strong>Recordá:</strong> el cambio aplica en el <u>próximo ciclo de riego</u>. Por ejemplo, si subís el índice a mitad
+      de una pasada, esa pasada termina con los tiempos previos y la siguiente ya usa el nuevo valor.
+    </p>
+  </div>
+
+  <h2>5. Sincronizar fecha/hora del device</h2>
+  <div class="card">
+    <p>
+      El ESP sincroniza hora por <strong>NTP</strong> automáticamente. Si no hay internet o querés corregirla "a mano"
+      (por ejemplo, para arrancar un ciclo a una hora exacta), usá la entidad <strong>config fecha hora</strong>:
+    </p>
+    <pre># Formato ISO: YYYY-MM-DD HH:MM:SS
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P 'tu_password' \
+  -t 'forrajero-65a404/datetime/forrajero_config_fecha_hora/command' \
+  -m '2026-09-24 18:30:00'</pre>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
+      Al setearla a mano, el dispositivo guarda el epoch en <code>g_last_epoch</code> (flash) y la restaura al siguiente boot.
+      Tan pronto como conecta a NTP vuelve a corregir solo.
+    </p>
+  </div>
+
+  <h2>6. Funcionamiento sin internet / WiFi</h2>
+  <div class="card">
+    <div class="info">
+      💡 <strong>El riego no depende de internet.</strong> El ESP32 ejecuta el ciclo localmente; la red solo se usa para telemetría y control remoto.
+    </div>
+    <ol>
+      <li>Mientras esté <strong>alimentado</strong>, sigue regando aunque se caiga el WiFi (usa su reloj interno + backup de hora).</li>
+      <li>Al <strong>reiniciar sin red</strong>, restaura <code>g_last_epoch</code> (última hora conocida) y riega igual hasta que NTP resincronice.</li>
+      <li>Sin red, MQTT queda <code>offline</code> pero las <strong>válvulas funcionan localmente</strong>.</li>
+      <li>Cuando vuelve la conexión, NTP corrige la hora (<code>on_connect → component.update: reloj_sntp</code>).</li>
+    </ol>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
+      🔽 <strong>Modo configuración sin red:</strong> si no encuentra tu WiFi, a los ~20s levanta el AP
+      <strong><code>Setup Forrajero</code></strong> (clave <code>centenario123</code>, IP <code>192.168.4.1</code>)
+      con el captive portal para configurar otra red.
+    </p>
+  </div>
+
+  <h2>7. Preguntas frecuentes</h2>
+  <div class="card">
+    <ul>
+      <li><strong>¿Puedo regar una sola válvula?</strong> Sí, con los switch <code>Válvula 1 (Agua)</code> y <code>Válvula 2 (Sanitizante)</code> activás cada una por separado desde la web.</li>
+      <li><strong>¿Cómo arranco el ciclo?</strong> Con el switch <code>Iniciar / Detener Ciclo</code> (ON) o seteando <code>Día Actual</code> en 1–14.</li>
+      <li><strong>¿Los valores se guardan?</strong> El día del ciclo, los ciclos de hoy, el estado activo y el índice de intensidad se guardan en flash; los tiempos por día están fijos en el firmware (se editan en <code>ejecutar_riego</code>).</li>
+      <li><strong>¿Por qué el sanitizante no abre en cada riego?</strong> Es intencional: quiere decir que se inyecta <u>1 sola vez por día</u> (primer ciclo) para desinfectar sin saturar de químico. El resto del día el sistema riega <strong>solo agua</strong>.</li>
+      <li><strong>¿Qué pasa con los nutrientes?</strong> En esta configuración <strong>no se dosifican</strong>: el relé K3 queda libre por si más adelante querés agregar una bomba de nutrientes.</li>
+      <li><strong>¿Qué pasa al llegar al día 15?</strong> El sistema se apaga solo (<code>sistema_activo = false</code>) y queda listo para cosechar y arrancar otro ciclo.</li>
+      <li><strong>¿Cómo hago el riego más intenso?</strong> Subí el slider <strong><code>Índice Intensidad Riego</code></strong> (0–10): suma 2 s de agua por punto y acorta el intervalo hasta 30 min. Ver sección <strong>Índice de Intensidad</strong>.</li>
+    </ul>
+  </div>
+
+  <p style="margin-top:32px; color:#64748b; text-align:center; font-size:0.85rem;">
+    Documento generado para el proyecto ESPHome — Forrajero (Kincony KC868-A4) · Ciclo de 14 días · Agua K4/GPIO4 · Sanitizante K2/GPIO15 · Índice de intensidad
+  </p>
+</div>
+</body>
+</html>

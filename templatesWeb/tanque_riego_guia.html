@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP32 - Sensor de Tanque + Riego | Conexionado y MQTT</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    line-height: 1.6;
+    padding: 24px;
+  }
+  .container { max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 1.8rem; margin-bottom: 4px; }
+  .subtitle { color: #94a3b8; margin-bottom: 24px; }
+  h2 {
+    font-size: 1.25rem;
+    margin: 32px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #334155;
+    color: #38bdf8;
+  }
+  h3, h4 { color: #38bdf8; margin: 12px 0 8px; }
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid #334155;
+    font-size: 0.9rem;
+  }
+  th { color: #94a3b8; font-weight: 600; }
+  code {
+    background: #0f172a;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.85rem;
+    color: #fbbf24;
+  }
+  pre {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    font-family: 'Consolas', monospace;
+    font-size: 0.85rem;
+    color: #86efac;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .pin-table td:first-child { font-weight: 700; }
+  .pin-hc { color: #f472b6; font-weight: 700; }
+  .pin-esp { color: #38bdf8; font-weight: 700; }
+  .topic { color: #fbbf24; }
+  .tag {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-left: 8px;
+  }
+  .tag-write { background: #166534; color: #bbf7d0; }
+  .tag-read { background: #3730a3; color: #c7d2fe; }
+  .warning {
+    background: #7f2d0f;
+    border: 1px solid #f55e1f;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    color: #fed7aa;
+  }
+  .info {
+    background: #164e63;
+    border: 1px solid #22d3ee;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    color: #cffafe;
+  }
+  ul, ol { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .plan-tag {
+    display:inline-block; padding:3px 12px; border-radius:999px;
+    font-size:.8rem; font-weight:700;
+  }
+  .plan1 { background:#7f1d1d; color:#fecaca; }
+  .plan2 { background:#14532d; color:#bbf7d0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>ESP32 — Sensor de Tanque &amp; Riego Automático</h1>
+  <p class="subtitle">Dispositivo: <code>tanque_riego</code> · Broker: <code>mqtt.petraka.com.ar:1883</code> · Firmware: ESPHome</p>
+
+  <div class="warning">
+    ⚠️ <strong>Importante:</strong> el módulo relé se alimenta típicamente con <strong>5V</strong> y su pin de control es <strong>activo bajo</strong> (el firmware usa <code>inverted: true</code>). Verificá siempre tu placa: si el módulo es de "trigger alto", ajustá la línea <code>inverted</code> en el YAML a <code>false</code>.
+  </div>
+
+  <h2>1. Conexionado del hardware</h2>
+  <div class="card">
+    <table class="pin-table">
+      <tr><th>Componente</th><th>Pin del componente</th><th>Pin ESP32</th><th>Nota</th></tr>
+      <tr>
+        <td rowspan="4">AJ-SR04M — modo HC-SR04<br><small style="color:#94a3b8">(trigger/echo, sin resistencia de modo)</small></td>
+        <td class="pin-hc">VCC</td>
+        <td class="pin-esp">5V (VIN)</td>
+        <td>Alimentación 5V (obligatorio, mide solo a 5V)</td>
+      </tr>
+      <tr>
+        <td class="pin-hc">GND</td>
+        <td class="pin-esp">GND</td>
+        <td>Tierra común</td>
+      </tr>
+      <tr>
+        <td class="pin-hc">RX (actúa como TRIG)</td>
+        <td class="pin-esp">GPIO 17</td>
+        <td>El ESP le manda el pulso de disparo (trigger_pin)</td>
+      </tr>
+      <tr>
+        <td class="pin-hc">TX (actúa como ECHO)</td>
+        <td class="pin-esp">GPIO 35</td>
+        <td>El ESP lee el pulso de eco (echo_pin)</td>
+      </tr>
+      <tr>
+        <td rowspan="3">Módulo relé (riego)</td>
+        <td>VCC / JD-VCC</td>
+        <td class="pin-esp">5V (VIN)</td>
+        <td>Alimentación</td>
+      </tr>
+      <tr>
+        <td>GND</td>
+        <td class="pin-esp">GND</td>
+        <td>Tierra común</td>
+      </tr>
+      <tr>
+        <td>IN / S</td>
+        <td class="pin-esp"><strong>GPIO 16</strong></td>
+        <td>Control del relé (activo bajo)</td>
+      </tr>
+      <tr>
+        <td>CH341A (solo debug)</td>
+        <td>TX / RX / GND</td>
+        <td class="pin-esp">RX / TX / GND (cruzado)</td>
+        <td>Solo para flashear</td>
+      </tr>
+    </table>
+
+    <p style="margin-top:12px; color:#94a3b8; font-size:0.85rem;">
+      ⚡ <strong>Alimentación recomendada:</strong> usar una fuente externa para el ESP32 y el relé, <u>no</u> alimentar desde el CH341A (provoca reinicios por falta de corriente).
+    </p>
+    <p style="margin-top:8px; color:#94a3b8; font-size:0.85rem;">
+      🔌 <strong>Nota modo del sensor:</strong> el AJ-SR04M viene de fábrica en modo HC-SR04 (trigger/echo). Sus pines <strong>RX</strong> y <strong>TX</strong> actúan como TRIG y ECHO respectivamente — <u>no</u> se necesita soldar resistencia (pads R19) para este modo. No conectar GPIO5 (esa placa lo usa para el LED onboard) ni GPIO16 (ocupado por el relé).
+    </p>
+  </div>
+
+  <h2>2. Identificación del dispositivo y MQTT</h2>
+  <div class="card">
+    <p>
+      Cada copia se identifica por el <strong>sufijo MAC</strong> del ESP32. El prefijo MQTT de cada dispositivo es
+      <code class="topic">tanque_riego-&lt;últimos 6 dígitos del MAC&gt;/</code> y la entidad <strong>device id</strong> expone
+      ese identificador (ej. <code>TR-7a4e7c</code>). Así conviven muchas copias sin colisión de tópicos.
+    </p>
+    <p style="margin-top:8px;">
+      Ejemplo: si el <code>device id</code> es <code>TR-7a4e7c</code>, el prefijo de tópicos es
+      <code class="topic">tanque_riego-7a4e7c/</code>.
+    </p>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>📡 Sensores (publican)</h3>
+      <table>
+        <tr><th>Tópico</th><th>Valor</th></tr>
+        <tr>
+          <td><code class="topic">tanque_riego-&lt;mac&gt;/sensor/tanque_riego_distancia_cm/state</code></td>
+          <td>Distancia en <strong>cm</strong><span class="tag tag-read">lectura</span></td>
+        </tr>
+        <tr>
+          <td><code class="topic">tanque_riego-&lt;mac&gt;/sensor/tanque_riego_nivel_tanque/state</code></td>
+          <td>Nivel del tanque en <strong>%</strong><span class="tag tag-read">lectura</span></td>
+        </tr>
+        <tr>
+          <td><code class="topic">tanque_riego-&lt;mac&gt;/sensor/tanque_riego_estado_riego/state</code></td>
+          <td><code>regando</code> / <code>esperando</code><span class="tag tag-read">lectura</span></td>
+        </tr>
+        <tr>
+          <td><code class="topic">tanque_riego-&lt;mac&gt;/sensor/tanque_riego_plan_activo/state</code></td>
+          <td><code>SITUACION 1</code> / <code>SITUACION 2</code><span class="tag tag-read">lectura</span></td>
+        </tr>
+        <tr>
+          <td><code class="topic">tanque_riego-&lt;mac&gt;/sensor/tanque_riego_hora_actual/state</code></td>
+          <td><code>AAAA-MM-DD HH:MM:SS</code><span class="tag tag-read">lectura</span></td>
+        </tr>
+        <tr>
+          <td><code class="topic">tanque_riego-&lt;mac&gt;/sensor/tanque_riego_device_id/state</code></td>
+          <td>ID único (ej. <code>TR-7a4e7c</code>)<span class="tag tag-read">lectura</span></td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>🎛️ Control directo del riego</h3>
+      <table>
+        <tr><th>Acción</th><th>Comando MQTT</th></tr>
+        <tr>
+          <td>Encender riego</td>
+          <td><code>.../switch/tanque_riego_riego_relay/command</code> = <code>ON</code></td>
+        </tr>
+        <tr>
+          <td>Apagar riego</td>
+          <td>mismo tópico = <code>OFF</code></td>
+        </tr>
+        <tr>
+          <td>Estado relay</td>
+          <td><code>.../switch/tanque_riego_riego_relay/state</code> → <code>ON</code>/<code>OFF</code></td>
+        </tr>
+        <tr>
+          <td>Activar/desactivar programador</td>
+          <td><code>.../switch/tanque_riego_programador_activo/command</code> = <code>ON</code>/<code>OFF</code></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <h2>3. Planes de riego automáticos</h2>
+  <div class="info">
+    💡 El sistema tiene <strong>2 planes de riego</strong> seleccionables por el selector <strong><code>plan riego</code></strong>.
+    El ESP32 revisa la hora cada minuto y enciende/apaga el relé según el ciclo de la situación activa.
+  </div>
+
+  <div class="card">
+    <span class="plan-tag plan1">SITUACIÓN 1</span>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.9rem;">Amanece 7:30 · Oscurece 19:30 · Temperatura 10–24 °C</p>
+    <table>
+      <tr><th>Horario</th><th>Riego</th><th>Apagado</th></tr>
+      <tr><td>7:30 – 12:00</td><td>15 min</td><td>30 min</td></tr>
+      <tr><td>12:00 – 15:00</td><td>15 min</td><td>15 min</td></tr>
+      <tr><td>15:00 – 19:30</td><td>15 min</td><td>30 min</td></tr>
+      <tr><td>19:30 – 7:30 (noche)</td><td colspan="2">Apagado continuo, salvo <strong>22:30, 01:30 y 04:30</strong> (15 min c/u)</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <span class="plan-tag plan2">SITUACIÓN 2</span>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.9rem;">Amanece 7:00 · Oscurece 21:00 · Temperatura 15–35 °C</p>
+    <table>
+      <tr><th>Horario</th><th>Riego</th><th>Apagado</th></tr>
+      <tr><td>7:00 – 10:30</td><td>15 min</td><td>30 min</td></tr>
+      <tr><td>10:30 – 12:00</td><td>15 min</td><td>15 min</td></tr>
+      <tr><td>12:00 – 16:00</td><td colspan="2"><strong>Riego continuo</strong></td></tr>
+      <tr><td>16:00 – 18:30</td><td>15 min</td><td>15 min</td></tr>
+      <tr><td>18:30 – 21:00</td><td>15 min</td><td>30 min</td></tr>
+      <tr><td>21:00 – 7:00 (noche)</td><td colspan="2">Apagado continuo, salvo <strong>23:30, 02:00 y 04:30</strong> (15 min c/u)</td></tr>
+    </table>
+  </div>
+
+  <h3>Cambiar de plan por MQTT</h3>
+  <div class="card">
+    # Usa el prefijo del device: tanque_riego-&lt;MAC&gt;/ (ej. device TR-7a4e7c -> tanque_riego-7a4e7c/)
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
+  -t 'tanque_riego-7a4e7c/select/tanque_riego_config_plan_riego/command' \
+  -m 'SITUACION 2'
+
+# Estado actual del plan
+mosquitto_sub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
+  -t 'tanque_riego-7a4e7c/select/tanque_riego_config_plan_riego/state' -v</pre>
+  </div>
+
+  <h2>4. Riego manual (ahora / detener)</h2>
+  <div class="card">
+    <p>Para un riego puntual (se apaga solo al pasar los minutos de <code>duracion riego</code>):</p>
+    <pre># Duración de riego manual (minutos)
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
+  -t 'tanque_riego-7a4e7c/number/tanque_riego_config_duracion_riego_min/command' -m 15
+
+# Iniciar riego ahora
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
+  -t 'tanque_riego-7a4e7c/switch/tanque_riego_riego_relay/command' -m ON
+
+# Detener riego de inmediato
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
+  -t 'tanque_riego-7a4e7c/switch/tanque_riego_riego_relay/command' -m OFF</pre>
+  </div>
+
+  <h2>5. Sincronizar fecha/hora manualmente</h2>
+  <div class="card">
+    <p>
+      El ESP32 sincroniza la hora automáticamente por <strong>NTP</strong>. Si se desactualiza, podés
+      corregirla publicando fecha y hora en el tópico <code>datetime</code>:
+    </p>
+    <pre># Formato ISO: YYYY-MM-DD HH:MM:SS
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
+  -t 'tanque_riego-7a4e7c/datetime/tanque_riego_config_fecha_hora/command' \
+  -m '2026-09-21 18:30:00'</pre>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
+      También podés ajustarla desde la web del device (<code>http://192.168.1.237</code>) en la entidad
+      <strong>config fecha hora</strong>, o desde Home Assistant.
+    </p>
+  </div>
+
+  <h2>6. Funcionamiento sin internet / WiFi</h2>
+  <div class="card">
+    <div class="info">
+      💡 <strong>El riego no depende de internet.</strong> El ESP32 ejecuta los ciclos de riego localmente; la red solo se usa para telemetría y control remoto.
+    </div>
+    <p>Comportamiento y respaldo de hora:</p>
+    <ol>
+      <li>Mientras el equipo esté <strong>alimentado</strong>, sigue regando según el plan de la SITUACIÓN aunque se caiga el WiFi/internet (usa su reloj interno).</li>
+      <li>Al <strong>reiniciarse en frío sin red</strong> (ej. corte de luz en el campo), restaura la <strong>última hora conocida</strong> guardada en flash (<code>g_last_epoch</code>) y riega igual, aunque los horarios queden levemente corridos hasta resincronizar NTP.</li>
+      <li>Sin red, MQTT queda <code>offline</code> (sensores/hora congelados en el broker) pero el <strong>relay funciona localmente</strong>.</li>
+      <li>Cuando vuelve la conexión, NTP corrige la hora (<code>on_connect → component.update: reloj_sntp</code>) y el device vuelve a publicar en <code>tanque_riego-7a4e7c/</code>.</li>
+    </ol>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
+      🔽 <strong>Modo configuración sin red:</strong> si no encontrás tu WiFi, a los ~20s se levanta el AP <strong><code>Setup Tanque Riego</code></strong> (clave <code>centenario123</code>, IP <code>192.168.4.1</code>) con el captive portal para configurar otra red.
+    </p>
+  </div>
+
+  <h2>7. Ejemplo con Node-RED / Node.js (MQTT.js)</h2>
+  <div class="card">
+    <pre>const mqtt = require('mqtt');
+const DEV = 'tanque_riego-7a4e7c'; // device id -> prefijo MAC
+const client = mqtt.connect('mqtt://mqtt.petraka.com.ar', {
+  username: 'alejandro', password: 'piteroski1984'
+});
+
+client.on('connect', () => {
+  // Cambiar a SITUACION 2
+  client.publish(`${DEV}/select/tanque_riego_config_plan_riego/command`, 'SITUACION 2');
+  // Activar programador
+  client.publish(`${DEV}/switch/tanque_riego_programador_activo/command`, 'ON');
+  // Corregir hora
+  client.publish(`${DEV}/datetime/tanque_riego_config_fecha_hora/command`, '2026-09-21 18:30:00');
+});
+
+client.on('message', (topic, payload) => {
+  console.log(topic, '=', payload.toString());
+});
+client.subscribe(`${DEV}/#`);</pre>
+  </div>
+
+  <h2>8. Ejemplo con n8n (HTTP → MQTT)</h2>
+  <div class="card">
+    <table>
+      <tr><th>Campo n8n</th><th>Valor</th></tr>
+      <tr><td>Broker</td><td><code>mqtt.petraka.com.ar:1883</code></td></tr>
+      <tr><td>Username / Password</td><td><code>alejandro</code> / <code>piteroski1984</code></td></tr>
+      <tr><td>Tópico (ej. riego ON)</td><td><code>tanque_riego-7a4e7c/switch/tanque_riego_riego_relay/command</code></td></tr>
+      <tr><td>Payload</td><td><code>ON</code></td></tr>
+    </table>
+  </div>
+
+  <h2>9. Calibración del sensor de distancia</h2>
+  <div class="card">
+    <p>
+      El AJ-SR04M en modo trigger/echo puede desfasarse. Se corrige con el <strong>factor de calibración</strong>
+      ajustable en vivo por MQTT (se guarda en memoria):
+    </p>
+    <pre># Setear factor de calibración (ej. para 60 cm reales -> leer 60)
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
+  -t 'tanque_riego-7a5dd4/number/tanque_riego_config_factor_calibracion/command' -m 1.10
+
+# Leer el factor actual
+mosquitto_sub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
+  -t 'tanque_riego-7a5dd4/number/tanque_riego_config_factor_calibracion/state' -v</pre>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
+      🎯 <strong>Cómo calibrar:</strong> poner un objeto a una distancia conocida (ej. 60 cm), leer el valor reportado en
+      <code>sensor/..._distancia_cm/state</code> y setear <code>factor = distancia_real / distancia_medida</code>.
+      Valor de fábrica: <code>1.10</code>.
+    </p>
+  </div>
+
+  <h2>10. Referencia rápida de tópicos útiles</h2>
+  <div class="card">
+    <table>
+      <tr><th>Tópico</th><th>Tipo</th><th>Payload</th></tr>
+      <tr><td><code>.../switch/..._riego_relay/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
+      <tr><td><code>.../select/..._plan_riego/command</code></td><td>escritura</td><td><code>SITUACION 1</code> / <code>SITUACION 2</code></td></tr>
+      <tr><td><code>.../switch/..._programador_activo/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
+      <tr><td><code>.../number/..._duracion_riego_min/command</code></td><td>escritura</td><td><code>1</code>–<code>120</code></td></tr>
+      <tr><td><code>.../datetime/..._fecha_hora/command</code></td><td>escritura</td><td><code>YYYY-MM-DD HH:MM:SS</code></td></tr>
+      <tr><td><code>.../number/..._altura_tanque_cm/command</code></td><td>escritura</td><td>altura total del tanque</td></tr>
+      <tr><td><code>.../number/..._offset_sensor_cm/command</code></td><td>escritura</td><td>distancia montaje sensor</td></tr>
+      <tr><td><code>.../number/..._factor_calibracion/command</code></td><td>escritura</td><td><code>0.2</code>–<code>5.0</code> (ej. <code>1.10</code>)</td></tr>
+      <tr><td><code>.../sensor/..._nivel_tanque/state</code></td><td>lectura</td><td>nivel en %</td></tr>
+      <tr><td><code>.../sensor/..._distancia_cm/state</code></td><td>lectura</td><td>distancia en cm</td></tr>
+      <tr><td><code>.../sensor/..._plan_activo/state</code></td><td>lectura</td><td>plan vigente</td></tr>
+      <tr><td><code>.../sensor/..._hora_actual/state</code></td><td>lectura</td><td>fecha/hora actual</td></tr>
+    <tr><td><code>.../sensor/..._device_id/state</code></td><td>lectura</td><td>ID único del device (ej. TR-7a4e7c)</td></tr>
+    </table>
+    <p style="margin-top:10px; font-size:0.85rem; color:#94a3b8;">
+      El prefijo completo <code>tanque_riego-&lt;MAC&gt;/</code> se omite arriba (indicado con <code>...</code>). Los nombres exactos de
+      entidades pueden verse en la página web del device (puerto 80) o en <code>mosquitto_sub -t 'tanque_riego-7a4e7c/#'</code>.
+    </p>
+  </div>
+
+  <h2>11. Flasheo del firmware</h2>
+  <div class="card">
+    <ol>
+      <li>Conectar CH341A: <code>TX↔RX</code>, <code>RX↔TX</code>, <code>GND↔GND</code> (fuente externa para el ESP32).</li>
+      <li>Mantener <strong>BOOT</strong>, tocar <strong>EN</strong>, soltar BOOT (modo download).</li>
+      <li><code>esptool.py --port /dev/ttyUSB0 --baud 115200 --before no_reset --after hard_reset write_flash 0x0 firmware.factory.bin</code></li>
+      <li>Si el device está online, actualizar por OTA: <code>docker exec esphome esphome upload --device 192.168.1.237 /config/tanque_riego.yaml</code></li>
+    </ol>
+  </div>
+
+  <p style="margin-top:32px; color:#64748b; text-align:center; font-size:0.85rem;">
+    Documento generado para el proyecto ESPHome — tanque_riego · Sensor AJ-SR04M (TRIG GPIO17 / ECHO GPIO35) · Relay GPIO 16 · Planes de riego por SITUACIÓN
+  </p>
+</div>
+</body>
+</html>

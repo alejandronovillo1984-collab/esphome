@@ -1,0 +1,553 @@
+# ===================================================================
+# SECCIÓN 1: Sustituciones (Variables de Configuración)
+# ===================================================================
+substitutions:
+  # 1. IDENTIDAD DEL DISPOSITIVO
+  dev_name: "${DEVICE_NAME}"
+  dev_friendly_name: "${DEVICE_NAME}"
+
+  # 2. CONEXIÓN WIFI
+  wifi_dev_ssid: "${WIFI_SSID}"
+  wifi_dev_pass: "${WIFI_PASSWORD}"
+
+  # 3. SERVIDOR MQTT
+  mqtt_host: "${MQTT_HOST}"
+  mqtt_port: "${MQTT_PORT}"
+  mqtt_user: "${MQTT_USERNAME}"
+  mqtt_pass: "${MQTT_PASSWORD}"
+
+  # 4. VALORES POR DEFECTO
+  zona_horaria: "America/Argentina/Buenos_Aires"
+
+  # Versión de firmware. El device la reporta vía MQTT en
+  # text_sensor/firmware_version/state (la app la muestra en /dispositivos).
+  fw_version: "1.0.0"
+  
+  # 5. PINES DE VÁLVULAS (Kincony KC868-A4)
+  #    Agua       -> Relay K4 (GPIO 4)
+  #    Sanitizante-> Relay K2 (GPIO 15)
+  pin_v1: "4"  # Válvula Agua - Relay K4
+  pin_v2: "15" # Válvula Sanitizante - Relay K2
+
+# ===================================================================
+# SECCIÓN 1.5: Preferencias de Persistencia en Flash
+# ===================================================================
+preferences:
+  flash_write_interval: 10s
+
+# ===================================================================
+# SECCIÓN 2: Configuración Básica del ESP32
+# ===================================================================
+esphome:
+  name: ${dev_name}
+  friendly_name: ${dev_friendly_name}
+  name_add_mac_suffix: true
+
+  on_boot:
+    - priority: 600.0
+      then:
+        - lambda: |-
+            uint32_t ep = id(g_last_epoch);
+            if (ep > 1500000000) {
+              struct timeval tv{};
+              tv.tv_sec = static_cast<time_t>(ep);
+              tv.tv_usec = 0;
+              settimeofday(&tv, nullptr);
+              ESP_LOGI("boot", "Hora restaurada de backup: %u", ep);
+            } else {
+              ESP_LOGW("boot", "Sin hora de backup previa (%u)", ep);
+            }
+    - priority: 950.0
+      then:
+        - lambda: |-
+            std::string mac = get_mac_address();
+            std::string suffix = mac.substr(mac.length() - 6);
+            std::string prefix = std::string("${dev_name}-") + suffix;
+            if (global_mqtt_client != nullptr) {
+              global_mqtt_client->set_topic_prefix(prefix, "");
+              global_mqtt_client->set_birth_message({prefix + "/status", "online", 0, true});
+              global_mqtt_client->set_last_will({prefix + "/status", "offline", 0, true});
+              ESP_LOGI("mqtt", "Topic prefix dinamico: %s", prefix.c_str());
+            }
+    - priority: -100
+      then:
+        - script.execute: restaurar_estado
+        - text_sensor.template.publish:
+            id: firmware_version
+            state: "${fw_version}"
+        - lambda: 'id(ota_status).publish_state("ok");'
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+http_request:
+  timeout: 60s
+
+logger:
+  level: INFO
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "E4i4IQ58gj0xo8XxHxhm5pIW4O9EcZdUUtKWULxyCR0="
+
+ota:
+  - platform: esphome
+    password: "60db2406aa727c70668d4d5024872f58"
+  - platform: http_request
+    id: ota_http
+
+web_server:
+  port: 80
+
+# ===================================================================
+# SECCIÓN 3: Conectividad
+# ===================================================================
+wifi:
+  id: wifi_component
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+  reboot_timeout: 0s
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Setup Forrajero"
+    password: "centenario123"
+    ap_timeout: 20s
+    manual_ip:
+      static_ip: 192.168.4.1
+      gateway: 192.168.4.1
+      subnet: 255.255.255.0
+
+captive_portal:
+
+mqtt:
+  id: mqtt_client
+  broker: ${mqtt_host}
+  port: ${mqtt_port}
+  username: ${mqtt_user}
+  password: ${mqtt_pass}
+  topic_prefix: ${dev_name} # Se setea dinámicamente con el MAC en on_boot
+  discovery: false
+  keepalive: 120s
+  reboot_timeout: 120s
+
+  on_connect:
+    - logger.log: ">> CONEXIÓN MQTT ESTABLECIDA <<"
+    - component.update: reloj_sntp
+
+time:
+  - platform: sntp
+    id: reloj_sntp
+    timezone: ${zona_horaria}
+    servers: [0.pool.ntp.org, 1.pool.ntp.org]
+    on_time:
+      # A las 00:00 avanzamos de día si está activo
+      - seconds: 0
+        minutes: 0
+        hours: 0
+        then:
+          - lambda: |-
+              if (id(sistema_activo)) {
+                id(dia_actual) += 1;
+                id(ciclos_hoy) = 0;
+                ESP_LOGI("ciclo", "Avanzando al Día %d", id(dia_actual));
+                if (id(dia_actual) > 14) {
+                  id(sistema_activo) = false;
+                  ESP_LOGI("ciclo", "¡Ciclo de 14 días completado!");
+                }
+              }
+          - script.execute: persistir_estado
+      # Cada minuto, chequeamos si nos toca regar
+      - seconds: 0
+        then:
+          - lambda: |-
+              auto time_now = id(reloj_sntp).now();
+              if (!time_now.is_valid()) return;
+
+              // Persistir la hora válida como backup para arranques sin internet
+              id(g_last_epoch) = (uint32_t) time_now.timestamp;
+
+              if (!id(sistema_activo)) return;
+              
+              int d = id(dia_actual);
+              int min_of_day = time_now.hour * 60 + time_now.minute;
+              
+              int interval_mins = 0;
+              if (d == 1) interval_mins = 180;
+              else if (d >= 2 && d <= 3) interval_mins = 120;
+              else if (d >= 4 && d <= 6) interval_mins = 120;
+              else if (d >= 7 && d <= 12) interval_mins = 90;
+              else if (d >= 13 && d <= 14) interval_mins = 180;
+
+              // Índice de intensidad: reduce el intervalo base (riego más frecuente)
+              int idx = id(global_indice_intensidad);
+              if (idx > 0) interval_mins = std::max(30, interval_mins - idx * 15);
+              
+              if (interval_mins > 0 && (min_of_day % interval_mins == 0)) {
+                ESP_LOGI("cron", "Hora coincidente con la frecuencia (%d min). Iniciando Riego.", interval_mins);
+                id(ejecutar_riego).execute();
+              }
+
+# ===================================================================
+# SECCIÓN 4: Variables Globales (Estado del Sistema)
+# ===================================================================
+globals:
+  - id: dia_actual
+    type: int
+    # restore_value: false -> la persistencia la maneja restaurar_estado/
+    # persistir_estado (write inmediato a NVS, sobrevive al corte de energía).
+    initial_value: '0' # 0 = Detenido, 1 a 14 = En progreso
+  - id: ciclos_hoy
+    type: int
+    initial_value: '0'
+  - id: sistema_activo
+    type: bool
+    initial_value: 'false'
+  - id: g_last_epoch
+    type: uint32_t
+    restore_value: true
+    initial_value: '0'
+  - id: global_indice_intensidad
+    type: int
+    initial_value: '0'
+  # Guard: mientras no termine restaurar_estado (on_boot) no se persiste nada,
+  # así un persist temprano del arranque no pisa los valores guardados en NVS.
+  - id: boot_ready
+    type: bool
+    initial_value: 'false'
+  # URL y MD5 del binario a instalar (los setea el handler MQTT de OTA)
+  - id: ota_url
+    type: std::string
+    initial_value: '""'
+  - id: ota_md5
+    type: std::string
+    initial_value: '""'
+
+# ===================================================================
+# SECCIÓN 5: Sensores y Controles (MQTT / Home Assistant)
+# ===================================================================
+text_sensor:
+  - platform: template
+    name: "Estado Actual Ciclo"
+    id: estado_actual_texto
+    icon: "mdi:sprout"
+    update_interval: 10s
+    lambda: |-
+      if (!id(sistema_activo)) return {"Detenido"};
+      int d = id(dia_actual);
+      if (d == 1) return {"Día 1: Hidratación / Siembra"};
+      if (d >= 2 && d <= 3) return {"Día 2-3: Germinación"};
+      if (d >= 4 && d <= 6) return {"Día 4-6: Inicio Crecimiento"};
+      if (d >= 7 && d <= 10) return {"Día 7-10: Crecimiento Máximo"};
+      if (d >= 11 && d <= 12) return {"Día 11-12: Engorde / Pico"};
+      if (d >= 13 && d <= 14) return {"Día 13-14: Lavado / Cosecha"};
+      return {"Finalizado o Fuera de Rango"};
+
+  - platform: template
+    name: "${dev_name} hora actual"
+    id: hora_actual_txt
+    update_interval: 10s
+    icon: "mdi:clock-outline"
+    lambda: |-
+      auto tt = id(reloj_sntp).now();
+      if (!tt.is_valid()) return {"--:--:--"};
+      return {tt.strftime("%Y-%m-%d %H:%M:%S")};
+
+  - platform: template
+    name: "${dev_name} device id"
+    id: device_id
+    update_interval: 5min
+    icon: "mdi:identifier"
+    lambda: |-
+      std::string mac = get_mac_address();
+      std::string suffix = mac.substr(mac.length() - 6);
+      char buf[20];
+      snprintf(buf, sizeof(buf), "FR-%s", suffix.c_str());
+      return {std::string(buf)};
+
+  # Versión de firmware instalada (la lee la app como text_sensor_firmware_version)
+  - platform: template
+    name: "firmware_version"
+    id: firmware_version
+    update_interval: 60s
+    icon: "mdi:numeric-1-box-multiple-outline"
+    lambda: 'return {"${fw_version}"};'
+
+# ===================================================================
+# SECCIÓN 5.2: OTA REMOTO (actualización de firmware desde la app)
+# ===================================================================
+# La app publica en: <prefijo>/text/ota_firmware/command con payload "URL|MD5"
+#   - URL: binario .bin accesible por HTTP(S)
+#   - MD5: md5 hex de 32 chars del binario (verificación previa a flashear)
+# El device reporta el progreso en <prefijo>/text/ota_status/state
+#   ("descargando" | "error: ..." | "ok") y la versión en
+#   text_sensor/firmware_version/state.
+text:
+  # Recibe el comando de OTA desde la app (MQTT set del text).
+  - platform: template
+    name: "ota_firmware"
+    id: ota_firmware
+    optimistic: true
+    mode: text
+    max_length: 255
+    on_value:
+      - lambda: |-
+          std::string cmd = x;
+          std::string url;
+          std::string md5;
+          size_t sep = cmd.find('|');
+          if (sep == std::string::npos) {
+            url = cmd;
+          } else {
+            url = cmd.substr(0, sep);
+            md5 = cmd.substr(sep + 1);
+          }
+          if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) {
+            id(ota_status).publish_state("error: URL invalida");
+            ESP_LOGW("ota", "URL de OTA invalida: %.50s", url.c_str());
+            return;
+          }
+          if (md5.size() != 32) {
+            id(ota_status).publish_state("error: MD5 invalido");
+            ESP_LOGW("ota", "MD5 de OTA invalido (len=%u)", (unsigned) md5.size());
+            return;
+          }
+          id(ota_url) = url;
+          id(ota_md5) = md5;
+          id(ota_status).publish_state("descargando");
+          ESP_LOGI("ota", "OTA solicitado desde %s", url.c_str());
+      - ota.http_request.flash:
+          id: ota_http
+          url: !lambda 'return id(ota_url);'
+          md5: !lambda 'return id(ota_md5);'
+      # Si llegamos acá fue porque el flash falló (si tiene éxito, reinicia).
+      - lambda: 'id(ota_status).publish_state("error: flash fallo");'
+
+  # Estado del último OTA, visible en el módulo Dispositivos de la app.
+  - platform: template
+    name: "ota_status"
+    id: ota_status
+    optimistic: true
+    mode: text
+    max_length: 64
+
+# ===================================================================
+# SECCIÓN 5.1: Seteador Manual de Fecha/Hora (fallback NTP)
+# ===================================================================
+datetime:
+  - platform: template
+    type: DATETIME
+    name: "${dev_name} config fecha hora"
+    id: dt_manual
+    time_id: reloj_sntp
+    lambda: |-
+      auto tt = id(reloj_sntp).now();
+      if (!tt.is_valid()) return {};
+      return tt;
+    set_action:
+      - lambda: |-
+          ESPTime val = x;
+          val.recalc_timestamp_local();
+          time_t epoch = val.timestamp;
+          if (epoch == (time_t) -1) {
+            ESP_LOGW("dt", "Fecha/hora invalida, no aplicada");
+            return;
+          }
+          struct timeval tv{};
+          tv.tv_sec = epoch;
+          tv.tv_usec = 0;
+          settimeofday(&tv, nullptr);
+          ESP_LOGI("dt", "Hora manual aplicada epoch=%ld", (long) epoch);
+          id(hora_actual_txt).publish_state(val.strftime("%Y-%m-%d %H:%M:%S"));
+          id(g_last_epoch) = (uint32_t) epoch;
+
+number:
+  - platform: template
+    name: "Día Actual (Manual)"
+    id: set_dia_actual
+    min_value: 0
+    max_value: 15
+    step: 1
+    update_interval: 10s
+    lambda: "return id(dia_actual);"
+    set_action:
+      - globals.set:
+          id: dia_actual
+          value: !lambda "return x;"
+      - if:
+          condition:
+            lambda: 'return x > 0 && x <= 14;'
+          then:
+            - globals.set:
+                id: sistema_activo
+                value: 'true'
+          else:
+            - globals.set:
+                id: sistema_activo
+                value: 'false'
+      - script.execute: persistir_estado
+
+  - platform: template
+    name: "Índice Intensidad Riego"
+    id: indice_intensidad
+    min_value: 0
+    max_value: 10
+    step: 1
+    mode: slider
+    lambda: "return id(global_indice_intensidad);"
+    set_action:
+      - globals.set:
+          id: global_indice_intensidad
+          value: !lambda "return x;"
+      - logger.log:
+          format: "Índice intensidad cambiado a %d"
+          args: ["(int) x"]
+      - script.execute: persistir_estado
+
+switch:
+  - platform: template
+    name: "Iniciar / Detener Ciclo Forraje"
+    id: switch_iniciar_ciclo
+    icon: "mdi:power"
+    lambda: "return id(sistema_activo);"
+    turn_on_action:
+      - globals.set:
+          id: sistema_activo
+          value: 'true'
+      - globals.set:
+          id: dia_actual
+          value: '1'
+      - globals.set:
+          id: ciclos_hoy
+          value: '0'
+      - logger.log: "Ciclo INICIADO. Día 1."
+      - script.execute: persistir_estado
+    turn_off_action:
+      - globals.set:
+          id: sistema_activo
+          value: 'false'
+      - globals.set:
+          id: dia_actual
+          value: '0'
+      - logger.log: "Ciclo DETENIDO."
+      - script.execute: persistir_estado
+
+  # Válvulas Físicas
+  - platform: gpio
+    pin: ${pin_v1}
+    id: valvula_1
+    name: "Válvula 1 (Agua)"
+    restore_mode: ALWAYS_OFF
+    internal: false
+  - platform: gpio
+    pin: ${pin_v2}
+    id: valvula_2
+    name: "Válvula 2 (Sanitizante)"
+    restore_mode: ALWAYS_OFF
+    internal: false
+
+# ===================================================================
+# SECCIÓN 6: Lógica de Riego (Scripts)
+# ===================================================================
+script:
+  # Persiste el estado operativo a NVS INMEDIATAMENTE (el restore_value de
+  # los globals solo se sincroniza cada flash_write_interval, así que un
+  # corte de energía pierde los cambios de los últimos segundos).
+  - id: persistir_estado
+    then:
+      - lambda: |-
+          if (!id(boot_ready)) return;
+          auto p_dia = global_preferences->make_preference<uint32_t>(0xD1A00A1u, true);
+          uint32_t v_dia = (uint32_t) id(dia_actual);
+          p_dia.save(&v_dia);
+          auto p_cic = global_preferences->make_preference<uint32_t>(0xD1A00A2u, true);
+          uint32_t v_cic = (uint32_t) id(ciclos_hoy);
+          p_cic.save(&v_cic);
+          auto p_act = global_preferences->make_preference<uint8_t>(0xD1A00A3u, true);
+          uint8_t v_act = id(sistema_activo) ? 1 : 0;
+          p_act.save(&v_act);
+          auto p_idx = global_preferences->make_preference<uint32_t>(0xD1A00A4u, true);
+          uint32_t v_idx = (uint32_t) id(global_indice_intensidad);
+          p_idx.save(&v_idx);
+          global_preferences->sync();
+          ESP_LOGI("persist", "persistido: dia=%u ciclos=%u activo=%u idx=%u", v_dia, v_cic, (unsigned) v_act, v_idx);
+
+  # Restaura el estado operativo desde NVS al arrancar (solo si hay dato
+  # guardado; si no, deja el valor del restore_value del global).
+  - id: restaurar_estado
+    then:
+      - lambda: |-
+          // Habilitamos la persistencia recién acá (fin de boot): cualquier
+          // persist previo de este arranque fue descartado por el guard.
+          id(boot_ready) = true;
+          auto p_dia = global_preferences->make_preference<uint32_t>(0xD1A00A1u, true);
+          uint32_t v_dia = 0;
+          if (p_dia.load(&v_dia)) id(dia_actual) = (int) v_dia;
+          auto p_cic = global_preferences->make_preference<uint32_t>(0xD1A00A2u, true);
+          uint32_t v_cic = 0;
+          if (p_cic.load(&v_cic)) id(ciclos_hoy) = (int) v_cic;
+          auto p_act = global_preferences->make_preference<uint8_t>(0xD1A00A3u, true);
+          uint8_t v_act = 0;
+          if (p_act.load(&v_act)) id(sistema_activo) = (v_act == 1);
+          auto p_idx = global_preferences->make_preference<uint32_t>(0xD1A00A4u, true);
+          uint32_t v_idx = 0;
+          if (p_idx.load(&v_idx)) id(global_indice_intensidad) = (int) v_idx;
+          ESP_LOGI("persist", "restaurado: dia=%d ciclos=%d activo=%d idx=%d", (int) id(dia_actual), (int) id(ciclos_hoy), (int) id(sistema_activo), (int) id(global_indice_intensidad));
+      # Re-persistimos para que NVS quede siempre igual que el estado real
+      # (neutraliza cualquier persist temprano o valor stale del arranque).
+      - script.execute: persistir_estado
+
+  - id: ejecutar_riego
+    mode: single
+    then:
+      - lambda: |-
+          if (!id(sistema_activo)) {
+            ESP_LOGI("riego", "Proceso de riego omitido: el sistema no está activo.");
+            return;
+          }
+          
+          id(ciclos_hoy) += 1;
+          int d = id(dia_actual);
+          int ciclo = id(ciclos_hoy);
+          int idx = id(global_indice_intensidad);
+          
+          int t_v1 = 0; // Segundos V1 (Agua - Relay K4)
+          int t_v2 = 0; // Segundos V2 (Sanitizante - Relay K2, solo 1er ciclo del día)
+          
+          if (d == 1) {
+            t_v1 = 5;
+          } else if (d >= 2 && d <= 3) {
+            t_v1 = 8;
+          } else if (d >= 4 && d <= 6) {
+            t_v1 = 10;
+          } else if (d >= 7 && d <= 10) {
+            t_v1 = 12;
+          } else if (d >= 11 && d <= 12) {
+            t_v1 = 14;
+          } else if (d >= 13 && d <= 14) {
+            t_v1 = 10;
+          } else {
+            ESP_LOGW("riego", "Día fuera de rango (%d), no se riega.", d);
+            return;
+          }
+          
+          // Sanitizante: solo 1 vez por día (primer ciclo)
+          if (ciclo == 1) t_v2 = 1;
+          
+          // Índice de intensidad: agrega más tiempo de agua por pasada
+          if (idx > 0) t_v1 += idx * 2; // cada punto = +2s de agua
+          
+          ESP_LOGI("riego", "Ejecutando Riego Día %d (Ciclo %d, Índice %d): V1=%ds, V2=%ds", d, ciclo, idx, t_v1, t_v2);
+          
+          if (t_v1 > 0) {
+            id(valvula_1).turn_on();
+            App.scheduler.set_timeout(id(valvula_1), "v1_off", t_v1 * 1000, []() { id(valvula_1).turn_off(); });
+          }
+          if (t_v2 > 0) {
+            id(valvula_2).turn_on();
+            App.scheduler.set_timeout(id(valvula_2), "v2_off", t_v2 * 1000, []() { id(valvula_2).turn_off(); });
+          }
+      - script.execute: persistir_estado

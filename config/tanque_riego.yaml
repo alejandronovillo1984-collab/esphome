@@ -1,0 +1,666 @@
+substitutions:
+  name: "tanque_riego"
+  dev_name: "tanque_riego"
+  friendly_name: "Tanque Riego"
+  zona_horaria: "America/Argentina/Buenos_Aires"
+  mqtt_host: "mqtt.petraka.com.ar"
+  mqtt_port: "1883"
+  mqtt_user: "alejandro"
+  mqtt_pass: "piteroski1984"
+
+  # Pines Hardware
+  # AJ-SR04M en MODO HC-SR04 (trigger/echo, sin soldar resistencia)
+  # trigger_pin = GPIO salida  -> TRIG del sensor
+  # echo_pin    = GPIO entrada -> ECHO del sensor
+  pin_trigger: "17"
+  pin_echo: "35"
+  pin_relay: "16"
+
+  # Defaults
+  altura_tanque_default: "100"   # cm altura total del tanque
+  offset_default: "10"           # cm distancia mínima (blind spot sensor)
+  duracion_default: "10"         # minutos de riego por evento manual
+
+  # Versión de firmware. El device la reporta vía MQTT en
+  # text_sensor/firmware_version/state (la app la muestra en /dispositivos).
+  fw_version: "1.0.0"
+
+preferences:
+  flash_write_interval: 10s
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: true
+
+  on_boot:
+    - priority: 600.0
+      then:
+        - lambda: |-
+            uint32_t ep = id(g_last_epoch);
+            if (ep > 1500000000) {
+              struct timeval tv{};
+              tv.tv_sec = static_cast<time_t>(ep);
+              tv.tv_usec = 0;
+              settimeofday(&tv, nullptr);
+              ESP_LOGI("boot", "Hora restaurada de backup: %u", ep);
+            } else {
+              ESP_LOGW("boot", "Sin hora de backup previa (%u)", ep);
+            }
+    - priority: 950.0
+      then:
+        - lambda: |-
+            std::string mac = get_mac_address();
+            std::string suffix = mac.substr(mac.length() - 6);
+            std::string prefix = std::string("tanque_riego-") + suffix;
+            if (global_mqtt_client != nullptr) {
+              global_mqtt_client->set_topic_prefix(prefix, "");
+              global_mqtt_client->set_birth_message({prefix + "/status", "online", 0, true});
+              global_mqtt_client->set_last_will({prefix + "/status", "offline", 0, true});
+              ESP_LOGI("mqtt", "Topic prefix dinamico: %s", prefix.c_str());
+            }
+    - priority: -100
+      then:
+        - text_sensor.template.publish:
+            id: riego_estado
+            state: "esperando"
+        - text_sensor.template.publish:
+            id: system_status
+            state: "Listo"
+        - text_sensor.template.publish:
+            id: firmware_version
+            state: "${fw_version}"
+        - lambda: 'id(ota_status).publish_state("ok");'
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+debug:
+  update_interval: 30s
+
+api:
+  encryption:
+    key: "3x0DVl7poo79pBm/ZT7NopTFil0CrGqm5h/xEE5J19M="
+
+ota:
+  - platform: esphome
+    password: "c856b025941bc2a5485acb47dc1ce790"
+  - platform: http_request
+    id: ota_http
+
+http_request:
+  timeout: 60s
+  verify_ssl: false  # framework arduino -> HTTPS sin validación de certificado
+
+web_server:
+  port: 80
+
+wifi:
+  id: wifi_component
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+  reboot_timeout: 0s
+  ap:
+    ssid: "Setup Tanque Riego"
+    password: "centenario123"
+    ap_timeout: 20s
+    manual_ip:
+      static_ip: 192.168.4.1
+      gateway: 192.168.4.1
+      subnet: 255.255.255.0
+
+captive_portal:
+
+mqtt:
+  id: mqtt_client
+  broker: ${mqtt_host}
+  port: ${mqtt_port}
+  username: ${mqtt_user}
+  password: ${mqtt_pass}
+  topic_prefix: ${dev_name} # Se setea dinámicamente con el MAC en on_boot
+  discovery: false
+  keepalive: 120s
+  reboot_timeout: 120s
+
+  on_connect:
+    - logger.log: ">> CONEXION MQTT ESTABLECIDA <<"
+    - component.update: reloj_sntp
+
+time:
+  - platform: sntp
+    id: reloj_sntp
+    timezone: ${zona_horaria}
+    servers: [0.pool.ntp.org, 1.pool.ntp.org]
+    on_time:
+      # Cada minuto aplica el ciclo de riego según la situación activa
+      - seconds: 0
+        then:
+          - script.execute: verificar_riego
+
+# =================================================
+# GLOBALS (persistentes en flash)
+# =================================================
+globals:
+  # Último epoch de hora válida conocido -> permite regar sin internet al arrancar
+  - id: g_last_epoch
+    type: uint32_t
+    restore_value: true
+    initial_value: '0'
+  # URL y MD5 del binario a instalar (los setea el handler MQTT de OTA)
+  - id: ota_url
+    type: std::string
+    initial_value: '""'
+  - id: ota_md5
+    type: std::string
+    initial_value: '""'
+
+# =================================================
+# ESTADO (text_sensor)
+# =================================================
+text_sensor:
+  - platform: template
+    name: "${dev_name} estado riego"
+    id: riego_estado
+    update_interval: 10s
+    icon: "mdi:water-sync"
+
+  - platform: template
+    name: "${dev_name} sistema estado"
+    id: system_status
+    update_interval: 10s
+    icon: "mdi:progress-check"
+
+  - platform: template
+    name: "${dev_name} plan activo"
+    id: plan_texto
+    update_interval: 30s
+    icon: "mdi:sprout"
+    lambda: |-
+      static const char *plans[] = {"hoja verde frio", "hoja verde calor", "fruto frio", "fruto calor", "germinador frio", "germinador calor"};
+      int i = (int) id(situacion_riego).active_index().value_or(0);
+      if (i < 0 || i > 5) i = 0;
+      return {plans[i]};
+
+  - platform: template
+    name: "${dev_name} hora actual"
+    id: hora_actual_txt
+    update_interval: 10s
+    icon: "mdi:clock-outline"
+    lambda: |-
+      auto tt = id(reloj_sntp).now();
+      if (!tt.is_valid()) return {"--:--:--"};
+      return {tt.strftime("%Y-%m-%d %H:%M:%S")};
+
+  - platform: template
+    name: "${dev_name} device id"
+    id: device_id
+    update_interval: 5min
+    icon: "mdi:identifier"
+    lambda: |-
+      std::string mac = get_mac_address();
+      std::string suffix = mac.substr(mac.length() - 6);
+      char buf[20];
+      snprintf(buf, sizeof(buf), "TR-%s", suffix.c_str());
+      return {std::string(buf)};
+
+  # Versión de firmware instalada (la lee la app como text_sensor_firmware_version)
+  - platform: template
+    name: "firmware_version"
+    id: firmware_version
+    update_interval: 60s
+    icon: "mdi:numeric-1-box-multiple-outline"
+    lambda: 'return {"${fw_version}"};'
+
+# =================================================
+# OTA REMOTO (actualización de firmware desde la app)
+# =================================================
+# La app publica en: <prefijo>/text/ota_firmware/command con payload "URL|MD5"
+#   - URL: binario .bin accesible por HTTP(S)
+#   - MD5: md5 hex de 32 chars del binario (verificación previa a flashear)
+# El device reporta el progreso en <prefijo>/text/ota_status/state
+#   ("descargando" | "error: ..." | "ok") y la versión en
+#   text_sensor/firmware_version/state.
+text:
+  # Recibe el comando de OTA desde la app (MQTT set del text).
+  - platform: template
+    name: "ota_firmware"
+    id: ota_firmware
+    optimistic: true
+    mode: text
+    max_length: 255
+    on_value:
+      - lambda: |-
+          std::string cmd = x;
+          std::string url;
+          std::string md5;
+          size_t sep = cmd.find('|');
+          if (sep == std::string::npos) {
+            url = cmd;
+          } else {
+            url = cmd.substr(0, sep);
+            md5 = cmd.substr(sep + 1);
+          }
+          if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) {
+            id(ota_status).publish_state("error: URL invalida");
+            ESP_LOGW("ota", "URL de OTA invalida: %.50s", url.c_str());
+            return;
+          }
+          if (md5.size() != 32) {
+            id(ota_status).publish_state("error: MD5 invalido");
+            ESP_LOGW("ota", "MD5 de OTA invalido (len=%u)", (unsigned) md5.size());
+            return;
+          }
+          id(ota_url) = url;
+          id(ota_md5) = md5;
+          id(ota_status).publish_state("descargando");
+          ESP_LOGI("ota", "OTA solicitado desde %s", url.c_str());
+      - ota.http_request.flash:
+          id: ota_http
+          url: !lambda 'return id(ota_url);'
+          md5: !lambda 'return id(ota_md5);'
+      # Si llegamos acá fue porque el flash falló (si tiene éxito, reinicia).
+      - lambda: 'id(ota_status).publish_state("error: flash fallo");'
+
+  # Estado del último OTA, visible en el módulo Dispositivos de la app.
+  - platform: template
+    name: "ota_status"
+    id: ota_status
+    optimistic: true
+    mode: text
+    max_length: 64
+
+# =================================================
+# SELECTOR DE PLAN DE RIEGO
+# =================================================
+select:
+  - platform: template
+    name: "${dev_name} config plan riego"
+    id: situacion_riego
+    optimistic: true
+    restore_value: true
+    options:
+      - "hoja verde frio"
+      - "hoja verde calor"
+      - "fruto frio"
+      - "fruto calor"
+      - "germinador frio"
+      - "germinador calor"
+    initial_option: "hoja verde frio"
+
+# =================================================
+# SETEADOR MANUAL DE FECHA/HORA (fallback NTP)
+# =================================================
+datetime:
+  - platform: template
+    type: DATETIME
+    name: "${dev_name} config fecha hora"
+    id: dt_manual
+    time_id: reloj_sntp
+    lambda: |-
+      auto tt = id(reloj_sntp).now();
+      if (!tt.is_valid()) return {};
+      return tt;
+    set_action:
+      - lambda: |-
+          ESPTime val = x;
+          val.recalc_timestamp_local();
+          time_t epoch = val.timestamp;
+          if (epoch == (time_t) -1) {
+            ESP_LOGW("dt", "Fecha/hora invalida, no aplicada");
+            return;
+          }
+          struct timeval tv{};
+          tv.tv_sec = epoch;
+          tv.tv_usec = 0;
+          settimeofday(&tv, nullptr);
+          ESP_LOGI("dt", "Hora manual aplicada epoch=%ld", (long) epoch);
+          id(hora_actual_txt).publish_state(val.strftime("%Y-%m-%d %H:%M:%S"));
+
+# =================================================
+# CONFIG / PROGRAMACION (solo riego manual)
+# =================================================
+number:
+  - platform: template
+    name: "${dev_name} config altura tanque cm"
+    id: altura_tanque
+    optimistic: true
+    min_value: 1
+    max_value: 1000
+    step: 1
+    initial_value: ${altura_tanque_default}
+    restore_value: true
+    unit_of_measurement: "cm"
+
+  - platform: template
+    name: "${dev_name} config offset sensor cm"
+    id: offset_sensor
+    optimistic: true
+    min_value: 1
+    max_value: 100
+    step: 1
+    initial_value: ${offset_default}
+    restore_value: true
+    unit_of_measurement: "cm"
+
+  - platform: template
+    name: "${dev_name} config duracion riego min"
+    id: duracion_riego
+    optimistic: true
+    min_value: 1
+    max_value: 120
+    step: 1
+    initial_value: ${duracion_default}
+    restore_value: true
+    unit_of_measurement: "min"
+
+  - platform: template
+    name: "${dev_name} config extras riego min"
+    id: extras_riego
+    optimistic: true
+    min_value: 0
+    max_value: 10
+    step: 1
+    initial_value: 0
+    restore_value: true
+    unit_of_measurement: "min"
+
+  - platform: template
+    name: "${dev_name} config factor calibracion"
+    id: factor_calibracion
+    optimistic: true
+    min_value: 0.2
+    max_value: 5.0
+    step: 0.01
+    initial_value: 1.10
+    restore_value: true
+    icon: "mdi:scale"
+
+# =================================================
+# SWITCHES
+# =================================================
+switch:
+  - platform: gpio
+    pin: ${pin_relay}
+    id: relay_riego
+    name: "${dev_name} riego relay"
+    restore_mode: ALWAYS_OFF
+    inverted: true
+    icon: "mdi:water-pump"
+    on_turn_on:
+      - text_sensor.template.publish:
+          id: riego_estado
+          state: "regando"
+      - logger.log: "RELAY ENCENDIDO (riego activo)"
+    on_turn_off:
+      - text_sensor.template.publish:
+          id: riego_estado
+          state: "esperando"
+      - logger.log: "RELAY APAGADO"
+
+  - platform: template
+    name: "${dev_name} programador activo"
+    id: programador_activo
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    icon: "mdi:toggle-switch"
+    turn_on_action:
+      - script.execute: verificar_riego
+      - logger.log: "Programador ACTIVADO"
+    turn_off_action:
+      - logger.log: "Programador DESACTIVADO"
+
+# =================================================
+# BUTTONS
+# =================================================
+button:
+  - platform: template
+    name: "${dev_name} action riego ahora"
+    id: btn_riego_ahora
+    icon: "mdi:water-pump"
+    on_press:
+      - script.execute: ejecutar_riego
+  - platform: template
+    name: "${dev_name} action detener riego"
+    id: btn_detener_riego
+    icon: "mdi:stop-circle"
+    on_press:
+      - script.stop: ejecutar_riego
+      - switch.turn_off: relay_riego
+      - text_sensor.template.publish:
+          id: system_status
+          state: "Listo"
+      - text_sensor.template.publish:
+          id: riego_estado
+          state: "esperando"
+  - platform: restart
+    name: "${dev_name} action reiniciar"
+    icon: "mdi:restart"
+
+# =================================================
+# SENSORES
+# =================================================
+sensor:
+  # Heap libre (diagnóstico de memoria para el web_server JSON)
+  - platform: debug
+    free:
+      name: "${dev_name} heap libre"
+      id: heap_libre
+    block:
+      name: "${dev_name} heap bloque"
+      id: heap_bloque
+
+  # Distancia del AJ-SR04M en modo HC-SR04 (trigger/echo) - cruda en cm sin calibrar
+  - platform: ultrasonic
+    trigger_pin: ${pin_trigger}
+    echo_pin: ${pin_echo}
+    name: "${dev_name} distancia bruta cm"
+    id: distancia_bruta
+    internal: true
+    update_interval: 10s
+    unit_of_measurement: "cm"
+    accuracy_decimals: 2
+    filters:
+      - multiply: 100.0
+
+  # Distancia calibrada (aplica factor de calibración)
+  - platform: template
+    name: "${dev_name} distancia cm"
+    id: distancia_cm
+    update_interval: 10s
+    unit_of_measurement: "cm"
+    accuracy_decimals: 1
+    filters:
+      - median:
+          window_size: 7
+          send_every: 1
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    lambda: |-
+      float raw = id(distancia_bruta).state;
+      float f = id(factor_calibracion).state;
+      if (std::isnan(raw) || f <= 0) return {};
+      return raw * f;
+
+  # Nivel de tanque en porcentaje
+  - platform: template
+    name: "${dev_name} nivel tanque"
+    id: nivel_tanque
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    icon: "mdi:water-percent"
+    update_interval: 10s
+    lambda: |-
+      float dist = id(distancia_cm).state;
+      float total = id(altura_tanque).state;
+      float offset = id(offset_sensor).state;
+      if (std::isnan(dist) || total <= 0) return {};
+      if (dist >= total) return 0.0;
+      if (dist <= offset) return 100.0;
+      float pct = ((total - dist) / (total - offset)) * 100.0;
+      if (pct < 0.0) pct = 0.0;
+      if (pct > 100.0) pct = 100.0;
+      return pct;
+
+# =================================================
+# SCRIPTS
+# =================================================
+script:
+  # Riego manual: enciende relay el tiempo configurado
+  - id: ejecutar_riego
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: "return id(relay_riego).state;"
+          then:
+            - logger.log: "Riego ya activo, se omite ejecucion"
+          else:
+            - text_sensor.template.publish:
+                id: system_status
+                state: "Regando"
+            - switch.turn_on: relay_riego
+            - delay: !lambda "return (int)(id(duracion_riego).state * 60.0) * 1000;"
+            - switch.turn_off: relay_riego
+            - text_sensor.template.publish:
+                id: system_status
+                state: "Listo"
+
+  # Aplica el ciclo de riego según la situación y hora actual
+  - id: verificar_riego
+    mode: single
+    then:
+      - lambda: |-
+          if (!id(programador_activo).state) return;
+
+          auto t = id(reloj_sntp).now();
+          if (!t.is_valid()) return;
+
+          // Persistir la hora válida como backup para arranques sin internet
+          id(g_last_epoch) = (uint32_t) t.timestamp;
+
+          int min_now = t.hour * 60 + t.minute;
+          int idx = (int) id(situacion_riego).active_index().value_or(0);
+          int extra = (int) id(extras_riego).state;
+          if (extra < 0) extra = 0;
+          if (extra > 10) extra = 10;
+
+          // Planes: 0 = hoja verde frio, 1 = hoja verde calor, 2 = fruto frio,
+          //         3 = fruto calor,     4 = germinador frio, 5 = germinador calor
+          // "extra" (0-10 min) se suma al final de cada evento/ventana de riego.
+
+          // HOJA VERDE FRIO (0): ventanas con ciclo on/off
+          int starts1[] = {450, 720, 900};
+          int ends1[]   = {720, 900, 1170};
+          int ons1[]    = {15, 15, 15};
+          int offs1[]   = {30, 15, 30};
+          int n1 = 3;
+          int night1[]  = {1350, 90, 270};      // 22:30, 01:30, 04:30
+
+          // HOJA VERDE CALOR (1): ventanas con ciclo on/off (0 = continuo)
+          int starts2[] = {420, 630, 720, 960, 1110};
+          int ends2[]   = {630, 720, 960, 1110, 1260};
+          int ons2[]    = {15, 15, 0, 15, 15};
+          int offs2[]   = {30, 15, 30, 15, 30};
+          int n2 = 5;
+          int night2[]  = {1410, 120, 270};     // 23:30, 02:00, 04:30
+
+          // FRUTO FRIO (2): eventos puntuales de 2 min
+          //   09:00 | 12:00 | 15:00 | 18:00
+          int starts3[] = {540, 720, 900, 1080};
+          int ends3[]   = {542, 722, 902, 1082};
+          int ons3[]    = {0, 0, 0, 0};          // riego continuo dentro de la ventana
+          int offs3[]   = {0, 0, 0, 0};
+          int n3 = 4;
+
+          // FRUTO CALOR (3): eventos puntuales de 2 min
+          //   08:00 | 10:30 | 13:00 | 15:30 | 18:00
+          int starts4[] = {480, 630, 780, 930, 1080};
+          int ends4[]   = {482, 632, 782, 932, 1082};
+          int ons4[]    = {0, 0, 0, 0, 0};
+          int offs4[]   = {0, 0, 0, 0, 0};
+          int n4 = 5;
+
+          // GERMINADOR FRIO (4): eventos de 2 min
+          //   10:00 | 16:00
+          int starts5[] = {600, 960};
+          int ends5[]   = {602, 962};
+          int ons5[]    = {0, 0};
+          int offs5[]   = {0, 0};
+          int n5 = 2;
+
+          // GERMINADOR CALOR (5): eventos de 2 min
+          //   09:00 | 12:00 | 15:00 | 18:00
+          int starts6[] = {540, 720, 900, 1080};
+          int ends6[]   = {542, 722, 902, 1082};
+          int ons6[]    = {0, 0, 0, 0};
+          int offs6[]   = {0, 0, 0, 0};
+          int n6 = 4;
+
+          int *starts = starts1;
+          int *ends   = ends1;
+          int *ons    = ons1;
+          int *offs   = offs1;
+          int n       = n1;
+          int *night  = night1;
+          bool night_enabled = true;
+
+          switch (idx) {
+            case 1:
+              starts = starts2; ends = ends2; ons = ons2; offs = offs2; n = n2; night = night2;
+              break;
+            case 2:
+              starts = starts3; ends = ends3; ons = ons3; offs = offs3; n = n3; night_enabled = false;
+              break;
+            case 3:
+              starts = starts4; ends = ends4; ons = ons4; offs = offs4; n = n4; night_enabled = false;
+              break;
+            case 4:
+              starts = starts5; ends = ends5; ons = ons5; offs = offs5; n = n5; night_enabled = false;
+              break;
+            case 5:
+              starts = starts6; ends = ends6; ons = ons6; offs = offs6; n = n6; night_enabled = false;
+              break;
+          }
+
+          bool should_on = false;
+
+          // Ventanas de día con ciclo on/off (o continuo / evento puntual)
+          bool in_window = false;
+          for (int i = 0; i < n; i++) {
+            if (min_now >= starts[i] && min_now < ends[i] + extra) {
+              in_window = true;
+              if (ons[i] == 0) {
+                should_on = true; // riego continuo
+              } else {
+                int pos = (min_now - starts[i]) % (ons[i] + offs[i]);
+                if (pos < ons[i]) should_on = true;
+              }
+              break;
+            }
+          }
+
+          // Período nocturno (solo planes de hoja verde): apagado salvo 3 riegos de 15 min
+          if (!in_window && night_enabled) {
+            for (int i = 0; i < 3; i++) {
+              int nt = night[i];
+              if (min_now >= nt && min_now < nt + 15 + extra) should_on = true;
+            }
+          }
+
+          // Aplicar estado al relay
+          if (should_on != id(relay_riego).state) {
+            if (should_on) {
+              ESP_LOGI("cron", "ON (%02d:%02d) PLAN %d extra %d", t.hour, t.minute, idx, extra);
+              id(relay_riego).turn_on();
+            } else {
+              ESP_LOGI("cron", "OFF (%02d:%02d)", t.hour, t.minute);
+              id(relay_riego).turn_off();
+            }
+          }
