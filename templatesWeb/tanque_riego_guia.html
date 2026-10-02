@@ -99,6 +99,10 @@
   }
   .plan1 { background:#7f1d1d; color:#fecaca; }
   .plan2 { background:#14532d; color:#bbf7d0; }
+  .plan3 { background:#3730a3; color:#c7d2fe; }
+  .plan4 { background:#7c2d12; color:#fed7aa; }
+  .plan5 { background:#4a044e; color:#f0abfc; }
+  .plan6 { background:#164e63; color:#cffafe; }
 </style>
 </head>
 <body>
@@ -194,19 +198,19 @@
           <td>Nivel del tanque en <strong>%</strong><span class="tag tag-read">lectura</span></td>
         </tr>
         <tr>
-          <td><code class="topic">tanque_riego-&lt;mac&gt;/sensor/tanque_riego_estado_riego/state</code></td>
+          <td><code class="topic">tanque_riego-&lt;mac&gt;/text_sensor/tanque_riego_estado_riego/state</code></td>
           <td><code>regando</code> / <code>esperando</code><span class="tag tag-read">lectura</span></td>
         </tr>
         <tr>
-          <td><code class="topic">tanque_riego-&lt;mac&gt;/sensor/tanque_riego_plan_activo/state</code></td>
-          <td><code>SITUACION 1</code> / <code>SITUACION 2</code><span class="tag tag-read">lectura</span></td>
+          <td><code class="topic">tanque_riego-&lt;mac&gt;/text_sensor/tanque_riego_plan_activo/state</code></td>
+          <td><code>hoja verde frio</code> / <code>fruto calor</code> …<span class="tag tag-read">lectura</span></td>
         </tr>
         <tr>
-          <td><code class="topic">tanque_riego-&lt;mac&gt;/sensor/tanque_riego_hora_actual/state</code></td>
+          <td><code class="topic">tanque_riego-&lt;mac&gt;/text_sensor/tanque_riego_hora_actual/state</code></td>
           <td><code>AAAA-MM-DD HH:MM:SS</code><span class="tag tag-read">lectura</span></td>
         </tr>
         <tr>
-          <td><code class="topic">tanque_riego-&lt;mac&gt;/sensor/tanque_riego_device_id/state</code></td>
+          <td><code class="topic">tanque_riego-&lt;mac&gt;/text_sensor/tanque_riego_device_id/state</code></td>
           <td>ID único (ej. <code>TR-7a4e7c</code>)<span class="tag tag-read">lectura</span></td>
         </tr>
       </table>
@@ -238,25 +242,25 @@
 
   <h2>3. Planes de riego automáticos</h2>
   <div class="info">
-    💡 El sistema tiene <strong>2 planes de riego</strong> seleccionables por el selector <strong><code>plan riego</code></strong>.
-    El ESP32 revisa la hora cada minuto y enciende/apaga el relé según el ciclo de la situación activa.
+    💡 El sistema tiene <strong>6 planes de riego</strong> seleccionables por el selector <strong><code>config plan riego</code></strong>.
+    El ESP32 revisa la hora cada minuto y enciende/apaga el relé según el ciclo del plan activo.
   </div>
 
   <div class="card">
-    <span class="plan-tag plan1">SITUACIÓN 1</span>
-    <p style="margin-top:8px; color:#94a3b8; font-size:.9rem;">Amanece 7:30 · Oscurece 19:30 · Temperatura 10–24 °C</p>
+    <span class="plan-tag plan1">hoja verde frio</span>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.9rem;">Cultivo de hoja en clima frío — ventanas con ciclo on/off + riegos nocturnos</p>
     <table>
       <tr><th>Horario</th><th>Riego</th><th>Apagado</th></tr>
       <tr><td>7:30 – 12:00</td><td>15 min</td><td>30 min</td></tr>
       <tr><td>12:00 – 15:00</td><td>15 min</td><td>15 min</td></tr>
       <tr><td>15:00 – 19:30</td><td>15 min</td><td>30 min</td></tr>
-      <tr><td>19:30 – 7:30 (noche)</td><td colspan="2">Apagado continuo, salvo <strong>22:30, 01:30 y 04:30</strong> (15 min c/u)</td></tr>
+      <tr><td>22:30 · 01:30 · 04:30</td><td colspan="2">15 min c/u (riegos nocturnos)</td></tr>
     </table>
   </div>
 
   <div class="card">
-    <span class="plan-tag plan2">SITUACIÓN 2</span>
-    <p style="margin-top:8px; color:#94a3b8; font-size:.9rem;">Amanece 7:00 · Oscurece 21:00 · Temperatura 15–35 °C</p>
+    <span class="plan-tag plan2">hoja verde calor</span>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.9rem;">Cultivo de hoja en clima cálido — con ventana continua al mediodía</p>
     <table>
       <tr><th>Horario</th><th>Riego</th><th>Apagado</th></tr>
       <tr><td>7:00 – 10:30</td><td>15 min</td><td>30 min</td></tr>
@@ -264,8 +268,50 @@
       <tr><td>12:00 – 16:00</td><td colspan="2"><strong>Riego continuo</strong></td></tr>
       <tr><td>16:00 – 18:30</td><td>15 min</td><td>15 min</td></tr>
       <tr><td>18:30 – 21:00</td><td>15 min</td><td>30 min</td></tr>
-      <tr><td>21:00 – 7:00 (noche)</td><td colspan="2">Apagado continuo, salvo <strong>23:30, 02:00 y 04:30</strong> (15 min c/u)</td></tr>
+      <tr><td>23:30 · 02:00 · 04:30</td><td colspan="2">15 min c/u (riegos nocturnos)</td></tr>
     </table>
+  </div>
+
+  <div class="card">
+    <span class="plan-tag plan3">fruto frio</span>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.9rem;">Cultivo de fruto en clima frío — 4 eventos puntuales de 2 min</p>
+    <table>
+      <tr><th>Horario</th><th>Riego</th></tr>
+      <tr><td>09:00 · 12:00 · 15:00 · 18:00</td><td>2 min c/u</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <span class="plan-tag plan4">fruto calor</span>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.9rem;">Cultivo de fruto en clima cálido — 5 eventos puntuales de 2 min</p>
+    <table>
+      <tr><th>Horario</th><th>Riego</th></tr>
+      <tr><td>08:00 · 10:30 · 13:00 · 15:30 · 18:00</td><td>2 min c/u</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <span class="plan-tag plan5">germinador frio</span>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.9rem;">Germinador en clima frío — 2 eventos puntuales de 2 min</p>
+    <table>
+      <tr><th>Horario</th><th>Riego</th></tr>
+      <tr><td>10:00 · 16:00</td><td>2 min c/u</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <span class="plan-tag plan6">germinador calor</span>
+    <p style="margin-top:8px; color:#94a3b8; font-size:.9rem;">Germinador en clima cálido — 4 eventos puntuales de 2 min</p>
+    <table>
+      <tr><th>Horario</th><th>Riego</th></tr>
+      <tr><td>09:00 · 12:00 · 15:00 · 18:00</td><td>2 min c/u</td></tr>
+    </table>
+  </div>
+
+  <div class="info">
+    💡 <strong>Extras de riego:</strong> cualquier plan suma <code>extras riego min</code> (0–10) al final de
+    cada ventana/evento, para compensar clima extremo. Los planes de <code>fruto</code> y <code>germinador</code>
+    no tienen riegos nocturnos (<code>night_enabled = false</code>).
   </div>
 
   <h3>Cambiar de plan por MQTT</h3>
@@ -273,7 +319,7 @@
     # Usa el prefijo del device: tanque_riego-&lt;MAC&gt;/ (ej. device TR-7a4e7c -> tanque_riego-7a4e7c/)
 mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
   -t 'tanque_riego-7a4e7c/select/tanque_riego_config_plan_riego/command' \
-  -m 'SITUACION 2'
+  -m 'hoja verde calor'
 
 # Estado actual del plan
 mosquitto_sub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
@@ -287,13 +333,13 @@ mosquitto_sub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
 mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
   -t 'tanque_riego-7a4e7c/number/tanque_riego_config_duracion_riego_min/command' -m 15
 
-# Iniciar riego ahora
+# Iniciar riego ahora (button "riego ahora")
 mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
-  -t 'tanque_riego-7a4e7c/switch/tanque_riego_riego_relay/command' -m ON
+  -t 'tanque_riego-7a4e7c/button/tanque_riego_action_riego_ahora/press' -m ''
 
-# Detener riego de inmediato
+# Detener riego de inmediato (button "detener riego")
 mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
-  -t 'tanque_riego-7a4e7c/switch/tanque_riego_riego_relay/command' -m OFF</pre>
+  -t 'tanque_riego-7a4e7c/button/tanque_riego_action_detener_riego/press' -m ''</pre>
   </div>
 
   <h2>5. Sincronizar fecha/hora manualmente</h2>
@@ -319,7 +365,7 @@ mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
     </div>
     <p>Comportamiento y respaldo de hora:</p>
     <ol>
-      <li>Mientras el equipo esté <strong>alimentado</strong>, sigue regando según el plan de la SITUACIÓN aunque se caiga el WiFi/internet (usa su reloj interno).</li>
+      <li>Mientras el equipo esté <strong>alimentado</strong>, sigue regando según el plan activo aunque se caiga el WiFi/internet (usa su reloj interno).</li>
       <li>Al <strong>reiniciarse en frío sin red</strong> (ej. corte de luz en el campo), restaura la <strong>última hora conocida</strong> guardada en flash (<code>g_last_epoch</code>) y riega igual, aunque los horarios queden levemente corridos hasta resincronizar NTP.</li>
       <li>Sin red, MQTT queda <code>offline</code> (sensores/hora congelados en el broker) pero el <strong>relay funciona localmente</strong>.</li>
       <li>Cuando vuelve la conexión, NTP corrige la hora (<code>on_connect → component.update: reloj_sntp</code>) y el device vuelve a publicar en <code>tanque_riego-7a4e7c/</code>.</li>
@@ -338,8 +384,8 @@ const client = mqtt.connect('mqtt://mqtt.petraka.com.ar', {
 });
 
 client.on('connect', () => {
-  // Cambiar a SITUACION 2
-  client.publish(`${DEV}/select/tanque_riego_config_plan_riego/command`, 'SITUACION 2');
+  // Cambiar a hoja verde calor
+  client.publish(`${DEV}/select/tanque_riego_config_plan_riego/command`, 'hoja verde calor');
   // Activar programador
   client.publish(`${DEV}/switch/tanque_riego_programador_activo/command`, 'ON');
   // Corregir hora
@@ -388,18 +434,24 @@ mosquitto_sub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
     <table>
       <tr><th>Tópico</th><th>Tipo</th><th>Payload</th></tr>
       <tr><td><code>.../switch/..._riego_relay/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
-      <tr><td><code>.../select/..._plan_riego/command</code></td><td>escritura</td><td><code>SITUACION 1</code> / <code>SITUACION 2</code></td></tr>
+      <tr><td><code>.../select/..._plan_riego/command</code></td><td>escritura</td><td><code>hoja verde frio</code> / <code>hoja verde calor</code> / <code>fruto frio</code> / <code>fruto calor</code> / <code>germinador frio</code> / <code>germinador calor</code></td></tr>
       <tr><td><code>.../switch/..._programador_activo/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
       <tr><td><code>.../number/..._duracion_riego_min/command</code></td><td>escritura</td><td><code>1</code>–<code>120</code></td></tr>
       <tr><td><code>.../datetime/..._fecha_hora/command</code></td><td>escritura</td><td><code>YYYY-MM-DD HH:MM:SS</code></td></tr>
       <tr><td><code>.../number/..._altura_tanque_cm/command</code></td><td>escritura</td><td>altura total del tanque</td></tr>
       <tr><td><code>.../number/..._offset_sensor_cm/command</code></td><td>escritura</td><td>distancia montaje sensor</td></tr>
       <tr><td><code>.../number/..._factor_calibracion/command</code></td><td>escritura</td><td><code>0.2</code>–<code>5.0</code> (ej. <code>1.10</code>)</td></tr>
+      <tr><td><code>.../number/..._extras_riego_min/command</code></td><td>escritura</td><td><code>0</code>–<code>10</code> (extras por evento de riego)</td></tr>
+      <tr><td><code>.../button/..._action_riego_ahora/press</code></td><td>escritura</td><td>riego manual inmediato</td></tr>
+      <tr><td><code>.../button/..._action_detener_riego/press</code></td><td>escritura</td><td>detener riego en curso</td></tr>
+      <tr><td><code>.../text_sensor/..._firmware_version/state</code></td><td>lectura</td><td>versión del firmware (envía la app)</td></tr>
+      <tr><td><code>.../text/ota_firmware/command</code></td><td>escritura</td><td><code>URL|MD5</code> para OTA remoto</td></tr>
+      <tr><td><code>.../text/ota_status/state</code></td><td>lectura</td><td><code>descargando</code> / <code>ok</code> / <code>error: ...</code></td></tr>
       <tr><td><code>.../sensor/..._nivel_tanque/state</code></td><td>lectura</td><td>nivel en %</td></tr>
       <tr><td><code>.../sensor/..._distancia_cm/state</code></td><td>lectura</td><td>distancia en cm</td></tr>
-      <tr><td><code>.../sensor/..._plan_activo/state</code></td><td>lectura</td><td>plan vigente</td></tr>
-      <tr><td><code>.../sensor/..._hora_actual/state</code></td><td>lectura</td><td>fecha/hora actual</td></tr>
-    <tr><td><code>.../sensor/..._device_id/state</code></td><td>lectura</td><td>ID único del device (ej. TR-7a4e7c)</td></tr>
+      <tr><td><code>.../text_sensor/..._plan_activo/state</code></td><td>lectura</td><td>plan vigente</td></tr>
+      <tr><td><code>.../text_sensor/..._hora_actual/state</code></td><td>lectura</td><td>fecha/hora actual</td></tr>
+    <tr><td><code>.../text_sensor/..._device_id/state</code></td><td>lectura</td><td>ID único del device (ej. TR-7a4e7c)</td></tr>
     </table>
     <p style="margin-top:10px; font-size:0.85rem; color:#94a3b8;">
       El prefijo completo <code>tanque_riego-&lt;MAC&gt;/</code> se omite arriba (indicado con <code>...</code>). Los nombres exactos de
@@ -418,7 +470,7 @@ mosquitto_sub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
   </div>
 
   <p style="margin-top:32px; color:#64748b; text-align:center; font-size:0.85rem;">
-    Documento generado para el proyecto ESPHome — tanque_riego · Sensor AJ-SR04M (TRIG GPIO17 / ECHO GPIO35) · Relay GPIO 16 · Planes de riego por SITUACIÓN
+    Documento generado para el proyecto ESPHome — tanque_riego · Sensor AJ-SR04M (TRIG GPIO17 / ECHO GPIO35) · Relay GPIO 16 · 6 planes de riego
   </p>
 </div>
 </body>

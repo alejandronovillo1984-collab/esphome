@@ -17,27 +17,28 @@ Guía para trabajar en este repositorio ESPHome.
 
 ## Flasheo por USB
 
-La placa se conecta por USB y aparece como `/dev/ttyUSB0`.
+La placa se conecta por USB (adaptador **CH341A**) y aparece como `/dev/ttyUSB0`.
 
-`config/forrajero.yaml` usa substitutions del dashboard (`${DEVICE_NAME}`, `${WIFI_SSID}`, `${WIFI_PASSWORD}`, `${MQTT_HOST}`, `${MQTT_PORT}`, `${MQTT_USERNAME}`, `${MQTT_PASSWORD}`). El CLI de ESPHome **no** las resuelve solo, así que **no** intentés flashear el archivo original directamente (falla con `'$' is an invalid character`).
-
-Usá el script:
+Usá **siempre** el script `flasheador.sh` (nunca `esphome run` directo sobre `forrajero.yaml`):
 
 ```bash
-./flash_forrajero.sh                # flash a /dev/ttyUSB0
-./flash_forrajero.sh /dev/ttyUSB1   # puerto custom
+./flasheador.sh riegoTanque             # flash tanque_riego.yaml a /dev/ttyUSB0
+./flasheador.sh forrajero               # flash forrajero.yaml a /dev/ttyUSB0
+./flasheador.sh forrajero /dev/ttyUSB1  # puerto custom
 ```
+
+`riegoTanque` = `config/tanque_riego.yaml` (substitutions fijas en el archivo). `forrajero` = `config/forrajero.yaml`, que usa substitutions del dashboard (`${DEVICE_NAME}`, `${WIFI_SSID}`, `${WIFI_PASSWORD}`, `${MQTT_HOST}`, `${MQTT_PORT}`, `${MQTT_USERNAME}`, `${MQTT_PASSWORD}`). El CLI de ESPHome **no** las resuelve solo, así que **no** intentés flashear el archivo original directamente (falla con `'$' is an invalid character`). El script resuelve las substitutions vía `sed` a una copia en `/tmp/esphome_flash_cache/<target>/`.
 
 Permite override de substitutions por env vars:
 
 ```bash
-DEVICE_NAME=forrajero2 MQTT_HOST=mi-broker.local ./flash_forrajero.sh
+DEVICE_NAME=forrajero2 MQTT_HOST=mi-broker.local ./flasheador.sh forrajero
 ```
 
 ### Ver logs seriales después de flashear
 
 ```bash
-docker run --rm --privileged -v /tmp/forrajero_flash:/config \
+docker run --rm --privileged -v /tmp/esphome_flash_cache/forrajero:/config \
   --device /dev/ttyUSB0:/dev/ttyUSB0 \
   ghcr.io/esphome/esphome logs forrajero.yaml --device /dev/ttyUSB0 --reset
 ```
@@ -51,7 +52,7 @@ docker run --rm -v /var/www/docker/esphome/config:/config \
   ghcr.io/esphome/esphome config forrajero.yaml
 ```
 
-Si el config usa substitutions del dashboard, pasalas antes con `sed` (igual que hace `flash_forrajero.sh`) o validá contra la copia en `/tmp/forrajero_flash/`.
+Si el config usa substitutions del dashboard, pasalas antes con `sed` (igual que hace `flasheador.sh`) o validá contra la copia en `/tmp/esphome_flash_cache/<target>/`.
 
 ## Docker
 
@@ -91,6 +92,6 @@ El dashboard corre con el contenedor `esphome` (ver `docker-compose.yaml`). Subs
 ### Pasos para publicar un firmware
 
 1. Editar `fw_version` en `substitutions` (o subirlo desde el módulo Firmwares de la app que gestiona el `.bin`, su `URL` y su `MD5`).
-2. Compilar y flashear el dispositivo referente por USB (`esphome run` o `./flash_forrajero.sh`).
+2. Compilar y flashear el dispositivo referente por USB (`./flasheador.sh forrajero`).
 3. Subir el `.bin` generado en `config/.esphome/build/<device>/.pioenvs/<device>/firmware.bin` al módulo Firmwares (la app calcula URL + MD5).
 4. Desde `/dispositivos` → "Instalar firmware" el device se actualiza solo y reporta la versión nueva.

@@ -200,7 +200,8 @@
       <tr><td>1</td><td><span class="phase-tag phase-1">Hidratación / Siembra</span></td><td>cada 180 min</td><td>8</td></tr>
       <tr><td>2 – 3</td><td><span class="phase-tag phase-2">Germinación</span></td><td>cada 120 min</td><td>12</td></tr>
       <tr><td>4 – 6</td><td><span class="phase-tag phase-3">Inicio de Crecimiento</span></td><td>cada 120 min</td><td>12</td></tr>
-      <tr><td>7 – 12</td><td><span class="phase-tag phase-4">Crecimiento Máximo</span></td><td>cada 90 min</td><td>16</td></tr>
+      <tr><td>7 – 10</td><td><span class="phase-tag phase-4">Crecimiento Máximo</span></td><td>cada 90 min</td><td>16</td></tr>
+      <tr><td>11 – 12</td><td><span class="phase-tag phase-5">Engorde / Pico</span></td><td>cada 90 min</td><td>16</td></tr>
       <tr><td>13 – 14</td><td><span class="phase-tag phase-5">Lavado / Cosecha</span></td><td>cada 180 min</td><td>8</td></tr>
     </table>
     <p style="margin-top:8px; color:#94a3b8; font-size:.85rem;">
@@ -327,6 +328,9 @@
       <tr><td>Leer fase vigente</td><td><code>.../text_sensor/estado_actual_ciclo/state</code></td><td>título de la fase</td></tr>
       <tr><td>Leer hora</td><td><code>.../text_sensor/forrajero_hora_actual/state</code></td><td><code>YYYY-MM-DD HH:MM:SS</code></td></tr>
       <tr><td>Setear fecha/hora</td><td><code>.../datetime/forrajero_config_fecha_hora/command</code></td><td><code>2026-09-24 18:30:00</code></td></tr>
+      <tr><td>Firmware version</td><td><code>.../text_sensor/firmware_version/state</code></td><td>versión del firmware (la lee la app)</td></tr>
+      <tr><td>OTA remoto (instalar firmware)</td><td><code>.../text/ota_firmware/command</code></td><td><code>URL|MD5</code> (la app gestiona el binario)</td></tr>
+      <tr><td>Estado del OTA</td><td><code>.../text/ota_status/state</code></td><td><code>descargando</code> / <code>ok</code> / <code>error: ...</code></td></tr>
       <tr><td>State / online-offline</td><td><code>.../status</code></td><td><code>online</code> / <code>offline</code></td></tr>
     </table>
     <p style="margin-top:10px; font-size:0.85rem; color:#94a3b8;">
