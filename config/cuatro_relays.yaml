@@ -1,0 +1,1002 @@
+# ===================================================================
+# CUATRO RELAYS - ESP-12F (ESP8266) + 4 RELES
+# ===================================================================
+# Placa: ESP-12F 4 Channel Relay (5V / 7-30VDC / 90-250VAC)
+# Reles activos en ALTO.
+#
+# Pines (template blakadder ESP12F_Relay_X4):
+#   Relay 1 -> GPIO16  (puede dar un pulso breve al boot)
+#   Relay 2 -> GPIO14
+#   Relay 3 -> GPIO12
+#   Relay 4 -> GPIO13
+#
+# IMPORTANTE: esta placa trae un header de jumpers RY1-RY4 (P3) que conecta
+# esos GPIO con los drivers de los reles. Si los jumpers no estan colocados,
+# el GPIO cambia de estado pero el rele fisico NO se mueve.
+# Driver: transistor NPN + rele de 5V => activo en ALTO (inverted: false).
+#
+# Cada canal tiene su propio modo, tiempos, programador y estado.
+# Modos: apagado, manual, 6 planes de riego del tanque y "germinadora".
+# ===================================================================
+
+substitutions:
+  # 1. IDENTIDAD DEL DISPOSITIVO
+  name: "cuatro_relays"
+  dev_name: "cuatro_relays"
+  friendly_name: "Cuatro Relays"
+
+  # 2. ZONA HORARIA
+  zona_horaria: "America/Argentina/Buenos_Aires"
+
+  # 3. SERVIDOR MQTT
+  mqtt_host: "mqtt.petraka.com.ar"
+  mqtt_port: "1883"
+  mqtt_user: "alejandro"
+  mqtt_pass: "piteroski1984"
+
+  # 4. PINES DE RELES
+  #    Relay 1 en GPIO16: la placa puede dar un pulso breve al energizar.
+  #    Para evitarlo, mover el jumper fisico de Relay1 a GPIO15 y cambiar
+  #    pin_r1 por "15" (GPIO15 es strapping pin, debe quedar bajo al boot).
+  pin_r1: "16"
+  pin_r2: "14"
+  pin_r3: "12"
+  pin_r4: "13"
+
+  # Reles activos en alto. Si la placa resultara activa en bajo, poner "true".
+  relay_inverted: "false"
+
+  # 5. VALORES POR DEFECTO
+  duracion_default: "10"
+  extras_default: "0"
+
+  # Version de firmware reportada por MQTT.
+  fw_version: "1.0.6"
+
+# ===================================================================
+# PREFERENCIAS / PERSISTENCIA
+# ===================================================================
+preferences:
+  flash_write_interval: 10s
+
+# ===================================================================
+# CONFIGURACION BASICA DEL ESP8266
+# ===================================================================
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: true
+
+  on_boot:
+    - priority: 600.0
+      then:
+        - lambda: |-
+            uint32_t ep = id(g_last_epoch);
+            if (ep > 1500000000) {
+              struct timeval tv{};
+              tv.tv_sec = static_cast<time_t>(ep);
+              tv.tv_usec = 0;
+              settimeofday(&tv, nullptr);
+              ESP_LOGI("boot", "Hora restaurada de backup: %u", ep);
+            } else {
+              ESP_LOGW("boot", "Sin hora de backup previa (%u)", ep);
+            }
+    - priority: 950.0
+      then:
+        - lambda: |-
+            std::string mac = get_mac_address();
+            std::string suffix = mac.substr(mac.length() - 6);
+            std::string prefix = std::string("${dev_name}-") + suffix;
+            if (global_mqtt_client != nullptr) {
+              global_mqtt_client->set_topic_prefix(prefix, "");
+              global_mqtt_client->set_birth_message({prefix + "/status", "online", 0, true});
+              global_mqtt_client->set_last_will({prefix + "/status", "offline", 0, true});
+              ESP_LOGI("mqtt", "Topic prefix dinamico: %s", prefix.c_str());
+            }
+    - priority: -100
+      then:
+        - text_sensor.template.publish:
+            id: firmware_version
+            state: "${fw_version}"
+        - lambda: 'id(ota_status).publish_state("ok");'
+        - script.execute: aplicar_arranque
+    - priority: -50
+      then:
+        - delay: 5s
+        - if:
+            condition:
+              wifi.connected:
+            then:
+              - logger.log: "WiFi STA conectado al boot; MQTT habilitado"
+            else:
+              - mqtt.disable:
+              - logger.log: "Sin STA (modo AP); MQTT deshabilitado para liberar RAM"
+
+esp8266:
+  board: nodemcuv2
+  # Necesario para que select/number/switch restore_value sobrevivan a un
+  # corte de energia (por defecto ESP8266 guarda preferencias en RTC).
+  restore_from_flash: true
+
+http_request:
+  timeout: 60s
+  # ESP8266 no valida certificados; el componente usa TLS inseguro.
+  verify_ssl: false
+
+logger:
+  level: INFO
+
+# OTA nativo ESPHome (LAN/serial) + OTA remoto por HTTP (app petraka)
+ota:
+  - platform: esphome
+    password: "70bb4d07679ffd714264a223ca907813"
+  - platform: http_request
+    id: ota_http
+
+# ===================================================================
+# CONECTIVIDAD
+# ===================================================================
+wifi:
+  id: wifi_component
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+  reboot_timeout: 0s
+  on_connect:
+    - mqtt.enable:
+    - logger.log: "WiFi STA conectado; MQTT habilitado"
+  on_disconnect:
+    - mqtt.disable:
+    - logger.log: "WiFi STA desconectado; MQTT deshabilitado"
+  ap:
+    ssid: "Setup Cuatro Relays"
+    password: "centenario123"
+    ap_timeout: 20s
+    manual_ip:
+      static_ip: 192.168.4.1
+      gateway: 192.168.4.1
+      subnet: 255.255.255.0
+
+captive_portal:
+
+mqtt:
+  id: mqtt_client
+  broker: ${mqtt_host}
+  port: ${mqtt_port}
+  username: ${mqtt_user}
+  password: ${mqtt_pass}
+  topic_prefix: ${dev_name} # Se setea dinamicamente con el MAC en on_boot
+  discovery: false
+  keepalive: 120s
+  # 0s: no reiniciar mientras esta en AP de configuracion sin acceso al broker.
+  reboot_timeout: 0s
+
+  on_connect:
+    - logger.log: ">> CONEXION MQTT ESTABLECIDA <<"
+    - component.update: reloj_sntp
+
+interval:
+  - interval: 60s
+    then:
+      - lambda: |-
+          ESP_LOGI("heap", "Free heap: %u bytes", ESP.getFreeHeap());
+
+time:
+  - platform: sntp
+    id: reloj_sntp
+    timezone: ${zona_horaria}
+    servers: [0.pool.ntp.org, 1.pool.ntp.org]
+    on_time:
+      # Cada minuto se evalua el modo/plan de los 4 canales.
+      - seconds: 0
+        then:
+          - script.execute: verificar_canales
+
+# ===================================================================
+# GLOBALS
+# ===================================================================
+globals:
+  # Ultimo epoch valido: permite arrancar sin internet y conservar la hora.
+  - id: g_last_epoch
+    type: uint32_t
+    restore_value: true
+    initial_value: '0'
+
+  # URL y MD5 del binario a instalar (los setea el handler MQTT de OTA).
+  - id: ota_url
+    type: std::string
+    initial_value: '""'
+  - id: ota_md5
+    type: std::string
+    initial_value: '""'
+
+  # Override manual por canal: mientras dura un "accionar ahora", el plan
+  # automatico no pisa el rele.
+  - id: manual_c1
+    type: bool
+    initial_value: 'false'
+  - id: manual_c2
+    type: bool
+    initial_value: 'false'
+  - id: manual_c3
+    type: bool
+    initial_value: 'false'
+  - id: manual_c4
+    type: bool
+    initial_value: 'false'
+
+  # Guard: true mientras el firmware (plan, arranque, timed run) mueve el
+  # rele. Si es false, el cambio vino de MQTT/boton y pasa el canal a manual.
+  - id: auto_c1
+    type: bool
+    initial_value: 'false'
+  - id: auto_c2
+    type: bool
+    initial_value: 'false'
+  - id: auto_c3
+    type: bool
+    initial_value: 'false'
+  - id: auto_c4
+    type: bool
+    initial_value: 'false'
+
+# ===================================================================
+# ESTADO (TEXT SENSORS)
+# ===================================================================
+text_sensor:
+  # Version de firmware instalada (la lee la app como text_sensor_firmware_version)
+  - platform: template
+    name: "firmware_version"
+    id: firmware_version
+    update_interval: 60s
+    icon: "mdi:numeric-1-box-multiple-outline"
+    lambda: 'return {"${fw_version}"};'
+
+# ===================================================================
+# OTA REMOTO (actualizacion de firmware desde la app)
+# ===================================================================
+# La app publica en: <prefijo>/text/ota_firmware/command con "URL|MD5".
+# El device reporta en <prefijo>/text/ota_status/state
+#   ("descargando" | "error: ..." | "ok").
+text:
+  - platform: template
+    name: "ota_firmware"
+    id: ota_firmware
+    optimistic: true
+    mode: text
+    max_length: 255
+    on_value:
+      - lambda: |-
+          std::string cmd = x;
+          std::string url;
+          std::string md5;
+          size_t sep = cmd.find('|');
+          if (sep == std::string::npos) {
+            url = cmd;
+          } else {
+            url = cmd.substr(0, sep);
+            md5 = cmd.substr(sep + 1);
+          }
+          if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) {
+            id(ota_status).publish_state("error: URL invalida");
+            ESP_LOGW("ota", "URL de OTA invalida: %.50s", url.c_str());
+            return;
+          }
+          if (md5.size() != 32) {
+            id(ota_status).publish_state("error: MD5 invalido");
+            ESP_LOGW("ota", "MD5 de OTA invalido (len=%u)", (unsigned) md5.size());
+            return;
+          }
+          id(ota_url) = url;
+          id(ota_md5) = md5;
+          id(ota_status).publish_state("descargando");
+          ESP_LOGI("ota", "OTA solicitado desde %s", url.c_str());
+      - ota.http_request.flash:
+          id: ota_http
+          url: !lambda 'return id(ota_url);'
+          md5: !lambda 'return id(ota_md5);'
+      # Si llegamos aca fue porque el flash fallo (si tiene exito, reinicia).
+      - lambda: 'id(ota_status).publish_state("error: flash fallo");'
+
+  - platform: template
+    name: "ota_status"
+    id: ota_status
+    optimistic: true
+    mode: text
+    max_length: 64
+
+# ===================================================================
+# SELECTOR DE MODO POR CANAL
+# ===================================================================
+# Opciones:
+#   0 apagado
+#   1 manual
+#   2 hoja verde frio
+#   3 hoja verde calor
+#   4 fruto frio
+#   5 fruto calor
+#   6 germinador frio
+#   7 germinador calor
+#   8 germinadora
+# ===================================================================
+select:
+  - platform: template
+    name: "${dev_name} canal 1 modo"
+    id: modo_c1
+    optimistic: true
+    restore_value: true
+    options:
+      - "apagado"
+      - "manual"
+      - "hoja verde frio"
+      - "hoja verde calor"
+      - "fruto frio"
+      - "fruto calor"
+      - "germinador frio"
+      - "germinador calor"
+      - "germinadora"
+    initial_option: "apagado"
+    set_action:
+      - lambda: |-
+          id(manual_c1) = false;
+          ESP_LOGI("modo", "Canal 1 modo: %s", x.c_str());
+      - script.execute: verificar_canales
+
+  - platform: template
+    name: "${dev_name} canal 2 modo"
+    id: modo_c2
+    optimistic: true
+    restore_value: true
+    options:
+      - "apagado"
+      - "manual"
+      - "hoja verde frio"
+      - "hoja verde calor"
+      - "fruto frio"
+      - "fruto calor"
+      - "germinador frio"
+      - "germinador calor"
+      - "germinadora"
+    initial_option: "apagado"
+    set_action:
+      - lambda: |-
+          id(manual_c2) = false;
+          ESP_LOGI("modo", "Canal 2 modo: %s", x.c_str());
+      - script.execute: verificar_canales
+
+  - platform: template
+    name: "${dev_name} canal 3 modo"
+    id: modo_c3
+    optimistic: true
+    restore_value: true
+    options:
+      - "apagado"
+      - "manual"
+      - "hoja verde frio"
+      - "hoja verde calor"
+      - "fruto frio"
+      - "fruto calor"
+      - "germinador frio"
+      - "germinador calor"
+      - "germinadora"
+    initial_option: "apagado"
+    set_action:
+      - lambda: |-
+          id(manual_c3) = false;
+          ESP_LOGI("modo", "Canal 3 modo: %s", x.c_str());
+      - script.execute: verificar_canales
+
+  - platform: template
+    name: "${dev_name} canal 4 modo"
+    id: modo_c4
+    optimistic: true
+    restore_value: true
+    options:
+      - "apagado"
+      - "manual"
+      - "hoja verde frio"
+      - "hoja verde calor"
+      - "fruto frio"
+      - "fruto calor"
+      - "germinador frio"
+      - "germinador calor"
+      - "germinadora"
+    initial_option: "apagado"
+    set_action:
+      - lambda: |-
+          id(manual_c4) = false;
+          ESP_LOGI("modo", "Canal 4 modo: %s", x.c_str());
+      - script.execute: verificar_canales
+
+# ===================================================================
+# CONFIGURACION POR CANAL (NUMBERS)
+# ===================================================================
+number:
+  - platform: template
+    name: "${dev_name} canal 1 extras min"
+    id: extras_c1
+    optimistic: true
+    min_value: 0
+    max_value: 10
+    step: 1
+    initial_value: ${extras_default}
+    restore_value: true
+    unit_of_measurement: "min"
+    icon: "mdi:timer-plus"
+    set_action:
+      - lambda: 'ESP_LOGI("cfg", "Canal 1 extras: %.0f min", x);'
+      - script.execute: verificar_canales
+
+  - platform: template
+    name: "${dev_name} canal 1 duracion manual min"
+    id: duracion_c1
+    optimistic: true
+    min_value: 1
+    max_value: 120
+    step: 1
+    initial_value: ${duracion_default}
+    restore_value: true
+    unit_of_measurement: "min"
+    icon: "mdi:timer-outline"
+
+  - platform: template
+    name: "${dev_name} canal 2 extras min"
+    id: extras_c2
+    optimistic: true
+    min_value: 0
+    max_value: 10
+    step: 1
+    initial_value: ${extras_default}
+    restore_value: true
+    unit_of_measurement: "min"
+    icon: "mdi:timer-plus"
+    set_action:
+      - lambda: 'ESP_LOGI("cfg", "Canal 2 extras: %.0f min", x);'
+      - script.execute: verificar_canales
+
+  - platform: template
+    name: "${dev_name} canal 2 duracion manual min"
+    id: duracion_c2
+    optimistic: true
+    min_value: 1
+    max_value: 120
+    step: 1
+    initial_value: ${duracion_default}
+    restore_value: true
+    unit_of_measurement: "min"
+    icon: "mdi:timer-outline"
+
+  - platform: template
+    name: "${dev_name} canal 3 extras min"
+    id: extras_c3
+    optimistic: true
+    min_value: 0
+    max_value: 10
+    step: 1
+    initial_value: ${extras_default}
+    restore_value: true
+    unit_of_measurement: "min"
+    icon: "mdi:timer-plus"
+    set_action:
+      - lambda: 'ESP_LOGI("cfg", "Canal 3 extras: %.0f min", x);'
+      - script.execute: verificar_canales
+
+  - platform: template
+    name: "${dev_name} canal 3 duracion manual min"
+    id: duracion_c3
+    optimistic: true
+    min_value: 1
+    max_value: 120
+    step: 1
+    initial_value: ${duracion_default}
+    restore_value: true
+    unit_of_measurement: "min"
+    icon: "mdi:timer-outline"
+
+  - platform: template
+    name: "${dev_name} canal 4 extras min"
+    id: extras_c4
+    optimistic: true
+    min_value: 0
+    max_value: 10
+    step: 1
+    initial_value: ${extras_default}
+    restore_value: true
+    unit_of_measurement: "min"
+    icon: "mdi:timer-plus"
+    set_action:
+      - lambda: 'ESP_LOGI("cfg", "Canal 4 extras: %.0f min", x);'
+      - script.execute: verificar_canales
+
+  - platform: template
+    name: "${dev_name} canal 4 duracion manual min"
+    id: duracion_c4
+    optimistic: true
+    min_value: 1
+    max_value: 120
+    step: 1
+    initial_value: ${duracion_default}
+    restore_value: true
+    unit_of_measurement: "min"
+    icon: "mdi:timer-outline"
+
+# ===================================================================
+# SWITCHES: RELES + PROGRAMADOR POR CANAL
+# ===================================================================
+switch:
+  # ---- Canal 1 ----
+  - platform: gpio
+    pin: ${pin_r1}
+    id: relay_c1
+    name: "${dev_name} canal 1 relay"
+    restore_mode: ALWAYS_OFF
+    inverted: ${relay_inverted}
+    icon: "mdi:electric-switch"
+    on_turn_on:
+      - lambda: |-
+          if (id(auto_c1)) return;
+          id(modo_c1).publish_state("manual");
+          ESP_LOGI("canal", "Canal 1 ON manual -> modo manual");
+
+  - platform: template
+    name: "${dev_name} canal 1 programador"
+    id: prog_c1
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    icon: "mdi:toggle-switch"
+    turn_on_action:
+      - logger.log: "Canal 1 programador ON"
+      - script.execute: verificar_canales
+    turn_off_action:
+      - lambda: |-
+          int m = (int) id(modo_c1).active_index().value_or(0);
+          if (m >= 2 && !id(manual_c1)) {
+            id(auto_c1) = true;
+            id(relay_c1).turn_off();
+            id(auto_c1) = false;
+          }
+      - logger.log: "Canal 1 programador OFF"
+
+  # ---- Canal 2 ----
+  - platform: gpio
+    pin: ${pin_r2}
+    id: relay_c2
+    name: "${dev_name} canal 2 relay"
+    restore_mode: ALWAYS_OFF
+    inverted: ${relay_inverted}
+    icon: "mdi:electric-switch"
+    on_turn_on:
+      - lambda: |-
+          if (id(auto_c2)) return;
+          id(modo_c2).publish_state("manual");
+          ESP_LOGI("canal", "Canal 2 ON manual -> modo manual");
+
+  - platform: template
+    name: "${dev_name} canal 2 programador"
+    id: prog_c2
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    icon: "mdi:toggle-switch"
+    turn_on_action:
+      - logger.log: "Canal 2 programador ON"
+      - script.execute: verificar_canales
+    turn_off_action:
+      - lambda: |-
+          int m = (int) id(modo_c2).active_index().value_or(0);
+          if (m >= 2 && !id(manual_c2)) {
+            id(auto_c2) = true;
+            id(relay_c2).turn_off();
+            id(auto_c2) = false;
+          }
+      - logger.log: "Canal 2 programador OFF"
+
+  # ---- Canal 3 ----
+  - platform: gpio
+    pin: ${pin_r3}
+    id: relay_c3
+    name: "${dev_name} canal 3 relay"
+    restore_mode: ALWAYS_OFF
+    inverted: ${relay_inverted}
+    icon: "mdi:electric-switch"
+    on_turn_on:
+      - lambda: |-
+          if (id(auto_c3)) return;
+          id(modo_c3).publish_state("manual");
+          ESP_LOGI("canal", "Canal 3 ON manual -> modo manual");
+
+  - platform: template
+    name: "${dev_name} canal 3 programador"
+    id: prog_c3
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    icon: "mdi:toggle-switch"
+    turn_on_action:
+      - logger.log: "Canal 3 programador ON"
+      - script.execute: verificar_canales
+    turn_off_action:
+      - lambda: |-
+          int m = (int) id(modo_c3).active_index().value_or(0);
+          if (m >= 2 && !id(manual_c3)) {
+            id(auto_c3) = true;
+            id(relay_c3).turn_off();
+            id(auto_c3) = false;
+          }
+      - logger.log: "Canal 3 programador OFF"
+
+  # ---- Canal 4 ----
+  - platform: gpio
+    pin: ${pin_r4}
+    id: relay_c4
+    name: "${dev_name} canal 4 relay"
+    restore_mode: ALWAYS_OFF
+    inverted: ${relay_inverted}
+    icon: "mdi:electric-switch"
+    on_turn_on:
+      - lambda: |-
+          if (id(auto_c4)) return;
+          id(modo_c4).publish_state("manual");
+          ESP_LOGI("canal", "Canal 4 ON manual -> modo manual");
+
+  - platform: template
+    name: "${dev_name} canal 4 programador"
+    id: prog_c4
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    icon: "mdi:toggle-switch"
+    turn_on_action:
+      - logger.log: "Canal 4 programador ON"
+      - script.execute: verificar_canales
+    turn_off_action:
+      - lambda: |-
+          int m = (int) id(modo_c4).active_index().value_or(0);
+          if (m >= 2 && !id(manual_c4)) {
+            id(auto_c4) = true;
+            id(relay_c4).turn_off();
+            id(auto_c4) = false;
+          }
+      - logger.log: "Canal 4 programador OFF"
+
+# ===================================================================
+# BUTTONS
+# ===================================================================
+button:
+  - platform: template
+    name: "${dev_name} canal 1 accionar ahora"
+    id: btn_ahora_c1
+    icon: "mdi:play-circle"
+    on_press:
+      - script.execute: ejecutar_manual_c1
+
+  - platform: template
+    name: "${dev_name} canal 1 detener"
+    id: btn_stop_c1
+    icon: "mdi:stop-circle"
+    on_press:
+      - script.stop: ejecutar_manual_c1
+      - globals.set:
+          id: manual_c1
+          value: 'false'
+      - lambda: |-
+          id(auto_c1) = true;
+          id(relay_c1).turn_off();
+          id(auto_c1) = false;
+
+  - platform: template
+    name: "${dev_name} canal 2 accionar ahora"
+    id: btn_ahora_c2
+    icon: "mdi:play-circle"
+    on_press:
+      - script.execute: ejecutar_manual_c2
+
+  - platform: template
+    name: "${dev_name} canal 2 detener"
+    id: btn_stop_c2
+    icon: "mdi:stop-circle"
+    on_press:
+      - script.stop: ejecutar_manual_c2
+      - globals.set:
+          id: manual_c2
+          value: 'false'
+      - lambda: |-
+          id(auto_c2) = true;
+          id(relay_c2).turn_off();
+          id(auto_c2) = false;
+
+  - platform: template
+    name: "${dev_name} canal 3 accionar ahora"
+    id: btn_ahora_c3
+    icon: "mdi:play-circle"
+    on_press:
+      - script.execute: ejecutar_manual_c3
+
+  - platform: template
+    name: "${dev_name} canal 3 detener"
+    id: btn_stop_c3
+    icon: "mdi:stop-circle"
+    on_press:
+      - script.stop: ejecutar_manual_c3
+      - globals.set:
+          id: manual_c3
+          value: 'false'
+      - lambda: |-
+          id(auto_c3) = true;
+          id(relay_c3).turn_off();
+          id(auto_c3) = false;
+
+  - platform: template
+    name: "${dev_name} canal 4 accionar ahora"
+    id: btn_ahora_c4
+    icon: "mdi:play-circle"
+    on_press:
+      - script.execute: ejecutar_manual_c4
+
+  - platform: template
+    name: "${dev_name} canal 4 detener"
+    id: btn_stop_c4
+    icon: "mdi:stop-circle"
+    on_press:
+      - script.stop: ejecutar_manual_c4
+      - globals.set:
+          id: manual_c4
+          value: 'false'
+      - lambda: |-
+          id(auto_c4) = true;
+          id(relay_c4).turn_off();
+          id(auto_c4) = false;
+
+# ===================================================================
+# SCRIPTS
+# ===================================================================
+script:
+  # Al arrancar: reles OFF y flags manuales limpios. Luego se evalua el plan
+  # (si todavia no hay hora valida, los modos automaticos esperan al SNTP).
+  - id: aplicar_arranque
+    then:
+      - lambda: |-
+          switch_::Switch *rels[4] = {id(relay_c1), id(relay_c2), id(relay_c3), id(relay_c4)};
+          bool *auto_flags[4] = {&id(auto_c1), &id(auto_c2), &id(auto_c3), &id(auto_c4)};
+          for (int i = 0; i < 4; i++) {
+            *auto_flags[i] = true;
+            rels[i]->turn_off();
+            *auto_flags[i] = false;
+          }
+          id(manual_c1) = false;
+          id(manual_c2) = false;
+          id(manual_c3) = false;
+          id(manual_c4) = false;
+          ESP_LOGI("boot", "Arranque: reles OFF, esperando hora valida");
+      - script.execute: verificar_canales
+
+  # Evalua el modo/plan de cada canal. Corre cada minuto y al cambiar
+  # modo, extras o programador.
+  - id: verificar_canales
+    mode: single
+    then:
+      - lambda: |-
+          select::Select *modos[4] = {id(modo_c1), id(modo_c2), id(modo_c3), id(modo_c4)};
+          number::Number *extras[4] = {id(extras_c1), id(extras_c2), id(extras_c3), id(extras_c4)};
+          switch_::Switch *progs[4] = {id(prog_c1), id(prog_c2), id(prog_c3), id(prog_c4)};
+          switch_::Switch *rels[4] = {id(relay_c1), id(relay_c2), id(relay_c3), id(relay_c4)};
+          bool *manual[4] = {&id(manual_c1), &id(manual_c2), &id(manual_c3), &id(manual_c4)};
+          bool *auto_flags[4] = {&id(auto_c1), &id(auto_c2), &id(auto_c3), &id(auto_c4)};
+
+          auto plan_should_on = [](int plan, int min_now, int extra) -> bool {
+            // Planes 0..5 = los 6 planes del tanque.
+            // Plan 6 = germinadora: 08:00, 11:00, 14:00, 17:00 -> 1 min.
+            int starts1[] = {450, 720, 900};
+            int ends1[]   = {720, 900, 1170};
+            int ons1[]    = {15, 15, 15};
+            int offs1[]   = {30, 15, 30};
+            int night1[]  = {1350, 90, 270};
+            int n1 = 3;
+
+            int starts2[] = {420, 630, 720, 960, 1110};
+            int ends2[]   = {630, 720, 960, 1110, 1260};
+            int ons2[]    = {15, 15, 0, 15, 15};
+            int offs2[]   = {30, 15, 30, 15, 30};
+            int night2[]  = {1410, 120, 270};
+            int n2 = 5;
+
+            int starts3[] = {540, 720, 900, 1080};
+            int ends3[]   = {542, 722, 902, 1082};
+            int ons3[]    = {0, 0, 0, 0};
+            int offs3[]   = {0, 0, 0, 0};
+            int n3 = 4;
+
+            int starts4[] = {480, 630, 780, 930, 1080};
+            int ends4[]   = {482, 632, 782, 932, 1082};
+            int ons4[]    = {0, 0, 0, 0, 0};
+            int offs4[]   = {0, 0, 0, 0, 0};
+            int n4 = 5;
+
+            int starts5[] = {600, 960};
+            int ends5[]   = {602, 962};
+            int ons5[]    = {0, 0};
+            int offs5[]   = {0, 0};
+            int n5 = 2;
+
+            int starts6[] = {540, 720, 900, 1080};
+            int ends6[]   = {542, 722, 902, 1082};
+            int ons6[]    = {0, 0, 0, 0};
+            int offs6[]   = {0, 0, 0, 0};
+            int n6 = 4;
+
+            int starts7[] = {480, 660, 840, 1020};
+            int ends7[]   = {481, 661, 841, 1021};
+            int ons7[]    = {0, 0, 0, 0};
+            int offs7[]   = {0, 0, 0, 0};
+            int n7 = 4;
+
+            int *starts = starts1;
+            int *ends   = ends1;
+            int *ons    = ons1;
+            int *offs   = offs1;
+            int n       = n1;
+            int *night  = night1;
+            bool night_enabled = true;
+
+            switch (plan) {
+              case 1:
+                starts = starts2; ends = ends2; ons = ons2; offs = offs2; n = n2; night = night2;
+                break;
+              case 2:
+                starts = starts3; ends = ends3; ons = ons3; offs = offs3; n = n3; night_enabled = false;
+                break;
+              case 3:
+                starts = starts4; ends = ends4; ons = ons4; offs = offs4; n = n4; night_enabled = false;
+                break;
+              case 4:
+                starts = starts5; ends = ends5; ons = ons5; offs = offs5; n = n5; night_enabled = false;
+                break;
+              case 5:
+                starts = starts6; ends = ends6; ons = ons6; offs = offs6; n = n6; night_enabled = false;
+                break;
+              case 6:
+                starts = starts7; ends = ends7; ons = ons7; offs = offs7; n = n7; night_enabled = false;
+                break;
+            }
+
+            bool should_on = false;
+            bool in_window = false;
+            for (int i = 0; i < n; i++) {
+              if (min_now >= starts[i] && min_now < ends[i] + extra) {
+                in_window = true;
+                if (ons[i] == 0) {
+                  should_on = true;
+                } else {
+                  int pos = (min_now - starts[i]) % (ons[i] + offs[i]);
+                  if (pos < ons[i]) should_on = true;
+                }
+                break;
+              }
+            }
+
+            if (!in_window && night_enabled) {
+              for (int i = 0; i < 3; i++) {
+                int nt = night[i];
+                if (min_now >= nt && min_now < nt + 15 + extra) should_on = true;
+              }
+            }
+            return should_on;
+          };
+
+          auto t = id(reloj_sntp).now();
+          // Guardar el epoch cada 10 min (no cada minuto) para no castigar
+          // la flash del ESP8266 con restore_from_flash.
+          if (t.is_valid() && t.minute % 10 == 0) id(g_last_epoch) = (uint32_t) t.timestamp;
+          int min_now = t.is_valid() ? (t.hour * 60 + t.minute) : -1;
+
+          for (int ch = 0; ch < 4; ch++) {
+            int modo = (int) modos[ch]->active_index().value_or(0);
+            switch_::Switch *rel = rels[ch];
+
+            // Modo apagado: siempre OFF, sin importar hora/programador.
+            if (modo == 0) {
+              if (rel->state) {
+                *auto_flags[ch] = true;
+                rel->turn_off();
+                *auto_flags[ch] = false;
+                ESP_LOGI("canal", "Canal %d OFF (modo apagado)", ch + 1);
+              }
+              continue;
+            }
+
+            // Modo manual: el rele lo maneja el switch/boton, no el plan.
+            if (modo == 1) continue;
+
+            // Plan automatico: requiere hora valida, programador ON y que
+            // no haya un accionar manual en curso.
+            if (min_now < 0) continue;
+            if (!progs[ch]->state) continue;
+            if (*manual[ch]) continue;
+
+            int plan = modo - 2;
+            if (plan < 0 || plan > 6) continue;
+            int extra = (int) extras[ch]->state;
+            if (extra < 0) extra = 0;
+            if (extra > 10) extra = 10;
+
+            bool should_on = plan_should_on(plan, min_now, extra);
+            if (should_on && !rel->state) {
+              *auto_flags[ch] = true;
+              rel->turn_on();
+              *auto_flags[ch] = false;
+              ESP_LOGI("canal", "Canal %d ON (%02d:%02d) plan %d extra %d",
+                       ch + 1, (int) t.hour, (int) t.minute, plan, extra);
+            } else if (!should_on && rel->state) {
+              *auto_flags[ch] = true;
+              rel->turn_off();
+              *auto_flags[ch] = false;
+              ESP_LOGI("canal", "Canal %d OFF (%02d:%02d) plan %d extra %d",
+                       ch + 1, (int) t.hour, (int) t.minute, plan, extra);
+            }
+          }
+
+  # Accionar ahora: enciende el canal durante "duracion manual".
+  - id: ejecutar_manual_c1
+    mode: restart
+    then:
+      - globals.set:
+          id: manual_c1
+          value: 'true'
+      - lambda: 'id(auto_c1) = true;'
+      - switch.turn_on: relay_c1
+      - lambda: 'id(auto_c1) = false;'
+      - delay: !lambda "return (uint32_t)(id(duracion_c1).state * 60000.0f);"
+      - lambda: 'id(auto_c1) = true;'
+      - switch.turn_off: relay_c1
+      - lambda: 'id(auto_c1) = false;'
+      - globals.set:
+          id: manual_c1
+          value: 'false'
+
+  - id: ejecutar_manual_c2
+    mode: restart
+    then:
+      - globals.set:
+          id: manual_c2
+          value: 'true'
+      - lambda: 'id(auto_c2) = true;'
+      - switch.turn_on: relay_c2
+      - lambda: 'id(auto_c2) = false;'
+      - delay: !lambda "return (uint32_t)(id(duracion_c2).state * 60000.0f);"
+      - lambda: 'id(auto_c2) = true;'
+      - switch.turn_off: relay_c2
+      - lambda: 'id(auto_c2) = false;'
+      - globals.set:
+          id: manual_c2
+          value: 'false'
+
+  - id: ejecutar_manual_c3
+    mode: restart
+    then:
+      - globals.set:
+          id: manual_c3
+          value: 'true'
+      - lambda: 'id(auto_c3) = true;'
+      - switch.turn_on: relay_c3
+      - lambda: 'id(auto_c3) = false;'
+      - delay: !lambda "return (uint32_t)(id(duracion_c3).state * 60000.0f);"
+      - lambda: 'id(auto_c3) = true;'
+      - switch.turn_off: relay_c3
+      - lambda: 'id(auto_c3) = false;'
+      - globals.set:
+          id: manual_c3
+          value: 'false'
+
+  - id: ejecutar_manual_c4
+    mode: restart
+    then:
+      - globals.set:
+          id: manual_c4
+          value: 'true'
+      - lambda: 'id(auto_c4) = true;'
+      - switch.turn_on: relay_c4
+      - lambda: 'id(auto_c4) = false;'
+      - delay: !lambda "return (uint32_t)(id(duracion_c4).state * 60000.0f);"
+      - lambda: 'id(auto_c4) = true;'
+      - switch.turn_off: relay_c4
+      - lambda: 'id(auto_c4) = false;'
+      - globals.set:
+          id: manual_c4
+          value: 'false'

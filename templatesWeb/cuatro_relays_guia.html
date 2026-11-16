@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP8266 - 4 Relés | Conexiónado, Modos y MQTT</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    line-height: 1.6;
+    padding: 24px;
+  }
+  .container { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 1.8rem; margin-bottom: 4px; }
+  .subtitle { color: #94a3b8; margin-bottom: 24px; }
+  h2 {
+    font-size: 1.25rem;
+    margin: 32px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #334155;
+    color: #38bdf8;
+  }
+  h3, h4 { color: #38bdf8; margin: 12px 0 8px; }
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid #334155;
+    font-size: 0.9rem;
+    vertical-align: top;
+  }
+  th { color: #94a3b8; font-weight: 600; }
+  code {
+    background: #0f172a;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.85rem;
+    color: #fbbf24;
+  }
+  pre {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    font-family: 'Consolas', monospace;
+    font-size: 0.85rem;
+    color: #86efac;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .pin-table td:first-child { font-weight: 700; }
+  .pin-esp { color: #38bdf8; font-weight: 700; }
+  .topic { color: #fbbf24; }
+  .tag {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-left: 8px;
+  }
+  .tag-write { background: #166534; color: #bbf7d0; }
+  .tag-read { background: #3730a3; color: #c7d2fe; }
+  .warning {
+    background: #7f2d0f;
+    border: 1px solid #f55e1f;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    color: #fed7aa;
+  }
+  .danger {
+    background: #450a0a;
+    border: 1px solid #ef4444;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    color: #fecaca;
+  }
+  .info {
+    background: #164e63;
+    border: 1px solid #22d3ee;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    color: #cffafe;
+  }
+  ul, ol { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .mode-tag {
+    display: inline-block; padding: 3px 12px; border-radius: 999px;
+    font-size: .8rem; font-weight: 700;
+  }
+  .m-off { background:#334155; color:#e2e8f0; }
+  .m-man { background:#7f1d1d; color:#fecaca; }
+  .m-1 { background:#14532d; color:#bbf7d0; }
+  .m-2 { background:#166534; color:#dcfce7; }
+  .m-3 { background:#3730a3; color:#c7d2fe; }
+  .m-4 { background:#1e40af; color:#dbeafe; }
+  .m-5 { background:#4a044e; color:#f0abfc; }
+  .m-6 { background:#581c87; color:#e9d5ff; }
+  .m-7 { background:#164e63; color:#cffafe; }
+  .small { font-size: .85rem; color: #94a3b8; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>ESP8266 - Placa de 4 Relés</h1>
+  <p class="subtitle">Dispositivo: <code>cuatro_relays</code> - Broker: <code>mqtt.petraka.com.ar:1883</code> - Firmware: ESPHome</p>
+
+  <div class="danger">
+    <strong>Seguridad electrica:</strong> esta placa puede alimentarse con <strong>90-250 VAC</strong>.
+    Es tensión peligrosa. No conectes el programador USB/serial mientras la placa este conectada a la red electrica.
+    La carga máxima de los contactos no está especificada por el fabricante: para cargas grandes usa un contactor externo.
+  </div>
+
+  <div class="warning">
+    <strong>Nivel de activación:</strong> en esta configuración los relés se manejan como
+    <strong>activos en alto</strong> (<code>relay_inverted: "false"</code>).
+    Si al probar el rele queda encendido cuando deberia estar apagado, cambia la substitution
+    <code>relay_inverted</code> a <code>"true"</code>.
+  </div>
+
+  <h2>1. Hardware y pines</h2>
+  <div class="card">
+    <table class="pin-table">
+      <tr><th>Canal</th><th>GPIO ESP8266</th><th>Nota</th></tr>
+      <tr>
+        <td>Relay 1</td>
+        <td class="pin-esp">GPIO16</td>
+        <td>La placa puede dar un pulso breve al energizar. Se puede mover a GPIO15 con un jumper fisico.</td>
+      </tr>
+      <tr>
+        <td>Relay 2</td>
+        <td class="pin-esp">GPIO14</td>
+        <td>Salida normal.</td>
+      </tr>
+      <tr>
+        <td>Relay 3</td>
+        <td class="pin-esp">GPIO12</td>
+        <td>Strapping pin: debe quedar bajo al boot. El rele activo en alto ayuda.</td>
+      </tr>
+      <tr>
+        <td>Relay 4</td>
+        <td class="pin-esp">GPIO13</td>
+        <td>Salida normal.</td>
+      </tr>
+      <tr>
+        <td>LED azul onboard</td>
+        <td class="pin-esp">GPIO5</td>
+        <td>Activo en bajo. No se usa para los relés.</td>
+      </tr>
+      <tr>
+        <td>Programación</td>
+        <td class="pin-esp">TX / RX / GPIO0 / GND / 3V3</td>
+        <td>Usar <strong>3.3 V</strong>. No usar 5 V para programar.</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="warning">
+    <strong>GPIO16 y Relay 1:</strong> el diseño original usa GPIO16 para el Relay 1 y ese pin
+    puede activarse brevemente al arrancar. Si ese pulso es un problema, moved el jumper del Relay 1
+    a la almohadilla <code>GPIO15</code> de la placa y cambia <code>pin_r1</code> a <code>"15"</code>
+    en el YAML. Ten en cuenta que GPIO15 tambien es un strapping pin y debe quedar bajo al boot.
+  </div>
+
+  <div class="danger">
+    <strong>Jumpers RY1-RY4 (P3):</strong> la placa tiene un header de jumpers que conecta
+    GPIO16/GPIO14/GPIO12/GPIO13 con los drivers de los relés. Sin esos 4 jumpers colocados,
+    el GPIO cambia de estado por MQTT pero el relé físico <strong>no se mueve</strong>.
+    Verificá que estén puestos y bien apoyados. El driver es un transistor NPN con relé de 5 V,
+    por eso el control es <strong>activo en alto</strong>.
+  </div>
+
+  <div class="card">
+    <h3>Alimentación</h3>
+    <ul>
+      <li><strong>90-250 VAC</strong> por los bornes de red de la placa.</li>
+      <li><strong>7-30 VDC</strong> por el borne de continua.</li>
+      <li><strong>5 VDC</strong> por el conector auxiliar (no usar 5 V del header de programacion).</li>
+      <li>Para programar: inyectar <strong>3.3 V</strong> en el pin <code>3V3</code> del header J7 y conectar el adaptador serie.</li>
+    </ul>
+  </div>
+
+  <h2>2. Conexión MQTT</h2>
+  <div class="card">
+    <p>
+      El dispositivo publica con un prefijo dinamico formado por el nombre y los ultimos 6 caracteres
+      de la MAC: <code class="topic">cuatro_relays-&lt;mac&gt;</code>.
+      El identificador visible es <code>4R-&lt;mac&gt;</code>.
+    </p>
+    <p style="margin-top:8px;">
+      Ejemplo: si la MAC termina en <code>7a4e7c</code>, el prefijo es
+      <code class="topic">cuatro_relays-7a4e7c/</code>.
+    </p>
+    <p style="margin-top:8px;">
+      Al conectar publica <code>online</code> en <code class="topic">&lt;prefijo&gt;/status</code>.
+      Si se cae la conexion, el broker publica <code>offline</code> como last will.
+    </p>
+  </div>
+
+  <h2>2.1 WiFi y AP de configuración</h2>
+  <div class="card">
+    <p>El equipo primero intenta conectarse a la red configurada en <code>config/secrets.yaml</code>
+      (por defecto <code>redOficina</code>). Si la encuentra, queda en esa red con IP asignada por DHCP
+      y <strong>no</strong> levanta un AP propio.</p>
+    <p style="margin-top:8px;">Si no puede conectarse, después de ~20 segundos levanta el AP de configuración:</p>
+    <table>
+      <tr><th>Parámetro</th><th>Valor</th></tr>
+      <tr><td>SSID del AP</td><td><code>Setup Cuatro Relays</code></td></tr>
+      <tr><td>Clave del AP</td><td><code>centenario123</code></td></tr>
+      <tr><td>IP del AP</td><td><code>192.168.4.1</code></td></tr>
+      <tr><td>Portal cautivo</td><td>Sí, para configurar otra red WiFi</td></tr>
+    </table>
+    <p class="small" style="margin-top:8px;">
+      Para cambiar de red WiFi: conectar al AP y abrir <code>http://192.168.4.1</code>.
+      Si el equipo ya está conectado a <code>redOficina</code>, el AP no aparece.
+    </p>
+  </div>
+
+  <h2>3. Entidades por canal</h2>
+  <p class="small">Reemplaza <code>X</code> por <code>1</code>, <code>2</code>, <code>3</code> o <code>4</code>.</p>
+
+  <div class="card">
+    <table>
+      <tr><th>Entidad</th><th>Topico</th><th>Uso</th></tr>
+      <tr>
+        <td>Modo</td>
+        <td><code class="topic">.../select/cuatro_relays_canal_X_modo/command</code><span class="tag tag-write">escritura</span></td>
+        <td><code>apagado</code>, <code>manual</code>, planes o <code>germinadora</code>.</td>
+      </tr>
+      <tr>
+        <td>Modo actual</td>
+        <td><code class="topic">.../select/cuatro_relays_canal_X_modo/state</code><span class="tag tag-read">lectura</span></td>
+        <td>Modo vigente.</td>
+      </tr>
+      <tr>
+        <td>Extras</td>
+        <td><code class="topic">.../number/cuatro_relays_canal_X_extras_min/command</code><span class="tag tag-write">escritura</span></td>
+        <td><code>0</code>-<code>10</code> minutos extra por evento/ventana.</td>
+      </tr>
+      <tr>
+        <td>Duracion manual</td>
+        <td><code class="topic">.../number/cuatro_relays_canal_X_duracion_manual_min/command</code><span class="tag tag-write">escritura</span></td>
+        <td><code>1</code>-<code>120</code> minutos para "accionar ahora".</td>
+      </tr>
+      <tr>
+        <td>Programador</td>
+        <td><code class="topic">.../switch/cuatro_relays_canal_X_programador/command</code><span class="tag tag-write">escritura</span></td>
+        <td><code>ON</code>/<code>OFF</code>: habilita o deshabilita el modo automatico.</td>
+      </tr>
+      <tr>
+        <td>Rele</td>
+        <td><code class="topic">.../switch/cuatro_relays_canal_X_relay/command</code><span class="tag tag-write">escritura</span></td>
+        <td><code>ON</code>/<code>OFF</code>: control manual directo del rele.</td>
+      </tr>
+      <tr>
+        <td>Accionar ahora</td>
+        <td><code class="topic">.../button/cuatro_relays_canal_X_accionar_ahora/command</code><span class="tag tag-write">escritura</span></td>
+        <td>Payload <code>PRESS</code>. Enciende por la duracion manual.</td>
+      </tr>
+      <tr>
+        <td>Detener</td>
+        <td><code class="topic">.../button/cuatro_relays_canal_X_detener/command</code><span class="tag tag-write">escritura</span></td>
+        <td>Payload <code>PRESS</code>. Cancela el accionar y apaga el rele.</td>
+      </tr>
+    </table>
+  </div>
+
+  <h2>4. Modos disponibles</h2>
+  <div class="card">
+    <table>
+      <tr><th>Modo</th><th>Comportamiento</th></tr>
+      <tr>
+        <td><span class="mode-tag m-off">apagado</span></td>
+        <td>Fuerza el rele apagado, sin importar hora ni programador.</td>
+      </tr>
+      <tr>
+        <td><span class="mode-tag m-man">manual</span></td>
+        <td>El rele solo responde al switch <code>relay</code> y a los botones.</td>
+      </tr>
+      <tr>
+        <td><span class="mode-tag m-1">hoja verde frio</span></td>
+        <td>Ventanas con ciclo ON/OFF y 3 riegos nocturnos.</td>
+      </tr>
+      <tr>
+        <td><span class="mode-tag m-2">hoja verde calor</span></td>
+        <td>Ventanas con ciclo ON/OFF, una ventana continua y 3 riegos nocturnos.</td>
+      </tr>
+      <tr>
+        <td><span class="mode-tag m-3">fruto frio</span></td>
+        <td>4 eventos diarios de 2 minutos.</td>
+      </tr>
+      <tr>
+        <td><span class="mode-tag m-4">fruto calor</span></td>
+        <td>5 eventos diarios de 2 minutos.</td>
+      </tr>
+      <tr>
+        <td><span class="mode-tag m-5">germinador frio</span></td>
+        <td>2 eventos diarios de 2 minutos.</td>
+      </tr>
+      <tr>
+        <td><span class="mode-tag m-6">germinador calor</span></td>
+        <td>4 eventos diarios de 2 minutos.</td>
+      </tr>
+      <tr>
+        <td><span class="mode-tag m-7">germinadora</span></td>
+        <td>4 eventos diarios de 1 minuto: 08:00, 11:00, 14:00 y 17:00.</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="info">
+    <strong>Extras:</strong> el valor <code>extras min</code> (0-10) se suma al final de cada ventana
+    o evento del plan. Con <code>extras = 0</code>, el modo <code>germinadora</code> dura exactamente
+    1 minuto por evento. Con <code>extras = 2</code>, dura 3 minutos.
+  </div>
+
+  <h3>Horarios de los planes</h3>
+  <div class="card">
+    <table>
+      <tr><th>Plan</th><th>Horarios / ciclo</th></tr>
+      <tr>
+        <td><strong>hoja verde frio</strong></td>
+        <td>
+          07:30-12:00 (15 min ON / 30 min OFF)<br>
+          12:00-15:00 (15 min ON / 15 min OFF)<br>
+          15:00-19:30 (15 min ON / 30 min OFF)<br>
+          Nocturno: 22:30, 01:30 y 04:30 (15 min)
+        </td>
+      </tr>
+      <tr>
+        <td><strong>hoja verde calor</strong></td>
+        <td>
+          07:00-10:30 (15 min ON / 30 min OFF)<br>
+          10:30-12:00 (15 min ON / 15 min OFF)<br>
+          12:00-16:00 (continuo)<br>
+          16:00-18:30 (15 min ON / 15 min OFF)<br>
+          18:30-21:00 (15 min ON / 30 min OFF)<br>
+          Nocturno: 23:30, 02:00 y 04:30 (15 min)
+        </td>
+      </tr>
+      <tr>
+        <td><strong>fruto frio</strong></td>
+        <td>09:00, 12:00, 15:00 y 18:00 (2 min cada uno)</td>
+      </tr>
+      <tr>
+        <td><strong>fruto calor</strong></td>
+        <td>08:00, 10:30, 13:00, 15:30 y 18:00 (2 min cada uno)</td>
+      </tr>
+      <tr>
+        <td><strong>germinador frio</strong></td>
+        <td>10:00 y 16:00 (2 min cada uno)</td>
+      </tr>
+      <tr>
+        <td><strong>germinador calor</strong></td>
+        <td>09:00, 12:00, 15:00 y 18:00 (2 min cada uno)</td>
+      </tr>
+      <tr>
+        <td><strong>germinadora</strong></td>
+        <td>08:00, 11:00, 14:00 y 17:00 (1 min cada uno)</td>
+      </tr>
+    </table>
+  </div>
+
+  <h2>5. Botones, programador y accionar ahora</h2>
+  <div class="card">
+    <ul>
+      <li><strong>Programador ON:</strong> el canal aplica el plan seleccionado cada minuto.</li>
+      <li><strong>Programador OFF:</strong> el canal deja de aplicar el plan y apaga el rele si estaba en modo automatico.</li>
+      <li><strong>Modo apagado:</strong> siempre gana; el rele queda OFF.</li>
+      <li><strong>Modo manual:</strong> el plan no toca el rele; usa el switch <code>relay</code>.</li>
+      <li><strong>Accionar ahora:</strong> enciende el canal durante <code>duracion manual min</code>, aunque el modo sea un plan. Mientras dura, el plan no lo pisa.</li>
+      <li><strong>Detener:</strong> corta el accionar manual y apaga el rele. Si el modo es un plan y el programador sigue ON, el proximo minuto puede volver a encenderlo; para detenerlo del todo pasa el modo a <code>apagado</code> o apaga el programador.</li>
+    </ul>
+    <div class="info" style="margin-top:12px;">
+      <strong>Control manual:</strong> al encender el switch <code>relay</code> desde MQTT o un botón,
+      el canal pasa automáticamente a modo <code>manual</code> y el plan deja de tocarlo
+      (firmware 1.0.3 en adelante). En versiones anteriores, primero hay que poner el modo en
+      <code>manual</code>. Si el modo es <code>apagado</code> o un plan que en ese horario debe estar
+      OFF, sin ese cambio el relé se apaga en el próximo minuto.
+      El cambio automático a <code>manual</code> no se guarda en flash: después de un reinicio
+      vuelve al último modo guardado. Si querés que quede persistente, seleccioná
+      <code>manual</code> desde el selector de modo.
+      <pre style="margin-top:8px;">mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'cuatro_relays-&lt;mac&gt;/switch/cuatro_relays_canal_1_relay/command' -m 'ON'</pre>
+      Para un encendido temporizado, usá el botón <code>accionar ahora</code>.
+    </div>
+  </div>
+
+  <h2>6. Fecha y hora</h2>
+  <div class="card">
+    <p>El equipo sincroniza por NTP. Si no tiene internet, guarda el ultimo epoch valido
+      y lo restaura al arrancar.</p>
+    <p class="small" style="margin-top:8px;">El seteo manual por <code>datetime</code> se quito
+      en la 1.0.6 para liberar RAM en el ESP8266.</p>
+  </div>
+
+  <h2>7. OTA remoto y version de firmware</h2>
+  <div class="card">
+    <p>La app publica el binario y su MD5 en:</p>
+    <pre>cuatro_relays-&lt;mac&gt;/text/ota_firmware/command   ->   URL|MD5</pre>
+    <p>El equipo responde en:</p>
+    <pre>cuatro_relays-&lt;mac&gt;/text/ota_status/state        ->   descargando | ok | error: ...</pre>
+    <p>Y reporta la version instalada en:</p>
+    <pre>cuatro_relays-&lt;mac&gt;/sensor/firmware_version/state</pre>
+    <p style="margin-top:8px;">
+      El MD5 debe tener 32 caracteres hexadecimales. El equipo lo verifica antes de flashear.
+      Si el OTA tiene exito, el equipo se reinicia solo.
+    </p>
+  </div>
+
+  <h2>8. Flasheo por USB</h2>
+  <div class="card">
+    <ol>
+      <li>Conectar el adaptador <strong>CH341A</strong> a 3.3 V (no 5 V) al header de programacion.</li>
+      <li>Puenteear <code>GPIO0</code> a <code>GND</code> para entrar en modo bootloader.</li>
+      <li>Resetear o energizar la placa.</li>
+      <li>Ejecutar:</li>
+    </ol>
+    <pre>./flasheador.sh cuatroRelays /dev/ttyUSB0</pre>
+    <p style="margin-top:8px;">Ver logs seriales:</p>
+    <pre>docker run --rm --privileged -v /tmp/esphome_flash_cache/cuatroRelays:/config \
+  --device /dev/ttyUSB0:/dev/ttyUSB0 \
+  ghcr.io/esphome/esphome logs cuatro_relays.yaml --device /dev/ttyUSB0 --reset</pre>
+    <p class="small">Si la placa no responde, revisa GPIO0 a GND, la alimentacion de 3.3 V y el puerto (<code>/dev/ttyUSB0</code> o <code>/dev/ttyUSB1</code>).</p>
+  </div>
+
+  <h2>9. Ejemplos MQTT</h2>
+  <div class="card">
+    <h3>Cambiar el modo del canal 1 a germinadora</h3>
+    <pre>mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'cuatro_relays-7a4e7c/select/cuatro_relays_canal_1_modo/command' \
+  -m 'germinadora'</pre>
+
+    <h3>Configurar extras y duracion manual</h3>
+    <pre>mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'cuatro_relays-7a4e7c/number/cuatro_relays_canal_1_extras_min/command' -m '0'
+
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'cuatro_relays-7a4e7c/number/cuatro_relays_canal_1_duracion_manual_min/command' -m '5'</pre>
+
+    <h3>Activar el programador y accionar ahora</h3>
+    <pre>mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'cuatro_relays-7a4e7c/switch/cuatro_relays_canal_1_programador/command' -m 'ON'
+
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'cuatro_relays-7a4e7c/button/cuatro_relays_canal_1_accionar_ahora/command' -m 'PRESS'</pre>
+
+    <h3>Detener el canal 1</h3>
+    <pre>mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'cuatro_relays-7a4e7c/button/cuatro_relays_canal_1_detener/command' -m 'PRESS'</pre>
+  </div>
+
+  <div class="card">
+    <h3>Ejemplo JavaScript (mqtt.js)</h3>
+    <pre>const DEV = 'cuatro_relays-7a4e7c';
+
+// Elegir modo del canal 2
+client.publish(`${DEV}/select/cuatro_relays_canal_2_modo/command`, 'germinadora');
+
+// Extras de 2 minutos y duracion manual de 10 minutos
+client.publish(`${DEV}/number/cuatro_relays_canal_2_extras_min/command`, '2');
+client.publish(`${DEV}/number/cuatro_relays_canal_2_duracion_manual_min/command`, '10');
+
+// Programador ON y accionar ahora
+client.publish(`${DEV}/switch/cuatro_relays_canal_2_programador/command`, 'ON');
+client.publish(`${DEV}/button/cuatro_relays_canal_2_accionar_ahora/command`, 'PRESS');
+
+// Leer estado del relay
+client.subscribe(`${DEV}/switch/cuatro_relays_canal_2_relay/state`);</pre>
+  </div>
+
+  <h2>10. Referencia rapida de topicos</h2>
+  <div class="card">
+    <table>
+      <tr><th>Topico</th><th>Dirección</th><th>Payload</th></tr>
+      <tr><td><code>.../select/..._canal_X_modo/command</code></td><td>escritura</td><td><code>apagado</code> / <code>manual</code> / plan / <code>germinadora</code></td></tr>
+      <tr><td><code>.../select/..._canal_X_modo/state</code></td><td>lectura</td><td>modo vigente</td></tr>
+      <tr><td><code>.../number/..._canal_X_extras_min/command</code></td><td>escritura</td><td><code>0</code>-<code>10</code></td></tr>
+      <tr><td><code>.../number/..._canal_X_duracion_manual_min/command</code></td><td>escritura</td><td><code>1</code>-<code>120</code></td></tr>
+      <tr><td><code>.../switch/..._canal_X_programador/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
+      <tr><td><code>.../switch/..._canal_X_relay/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
+      <tr><td><code>.../button/..._canal_X_accionar_ahora/command</code></td><td>escritura</td><td><code>PRESS</code></td></tr>
+      <tr><td><code>.../button/..._canal_X_detener/command</code></td><td>escritura</td><td><code>PRESS</code></td></tr>
+      <tr><td><code>.../sensor/firmware_version/state</code></td><td>lectura</td><td>version del firmware</td></tr>
+      <tr><td><code>.../text/ota_firmware/command</code></td><td>escritura</td><td><code>URL|MD5</code></td></tr>
+      <tr><td><code>.../text/ota_status/state</code></td><td>lectura</td><td><code>descargando</code> / <code>ok</code> / <code>error: ...</code></td></tr>
+    </table>
+  </div>
+
+  <h2>11. Problemas frecuentes</h2>
+  <div class="card">
+    <ul>
+      <li><strong>El rele trabaja invertido:</strong> cambiar <code>relay_inverted</code> de <code>"false"</code> a <code>"true"</code>.</li>
+      <li><strong>Relay 1 pulsa al energizar:</strong> es por GPIO16. Mover el jumper a GPIO15 y cambiar <code>pin_r1</code> a <code>"15"</code>.</li>
+      <li><strong>No arranca o reinicia:</strong> revisar que GPIO0, GPIO12 y GPIO15 queden en el nivel correcto al boot; desconectar cargas y probar solo con la placa.</li>
+      <li><strong>No aplica horarios:</strong> verificar que el programador este ON, que el modo no sea <code>apagado</code>/<code>manual</code> y que la hora sea valida.</li>
+      <li><strong>No se ve en MQTT:</strong> el prefijo se arma con el nombre y los ultimos 6 de la MAC (<code>cuatro_relays-&lt;mac&gt;</code>); revisar usuario/clave del broker.</li>
+      <li><strong>El OTA falla:</strong> verificar que la URL sea accesible por HTTP/HTTPS y que el MD5 sea el del binario exacto.</li>
+      <li><strong>La página web principal no carga:</strong> la 1.0.6 no incluye la UI <code>web_server</code> para ahorrar RAM. El captive portal y <code>/update</code> siguen disponibles; el control es por MQTT.</li>
+    </ul>
+  </div>
+
+  <p class="small" style="margin-top:24px;">
+    Documento generado para el proyecto ESPHome - cuatro_relays - ESP-12F 4 Channel Relay
+    (Relay1 GPIO16 / Relay2 GPIO14 / Relay3 GPIO12 / Relay4 GPIO13, activos en alto).
+  </p>
+</div>
+</body>
+</html>

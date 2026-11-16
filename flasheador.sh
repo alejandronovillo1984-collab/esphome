@@ -4,12 +4,14 @@
 #
 # Uso:
 #   ./flasheador.sh riegoTanque [puerto]
-#   ./flasheador.sh forrajero  [puerto]
+#   ./flasheador.sh forrajero   [puerto]
+#   ./flasheador.sh cuatroRelays [puerto]
 #
 # Parametros:
-#   riegoTanque -> config/tanque_riego.yaml   (substitutions fijas en el archivo)
-#   forrajero   -> config/forrajero.yaml      (usa substitutions del dashboard,
-#                 se resuelven a una copia en /tmp/forrajero_flash/)
+#   riegoTanque  -> config/tanque_riego.yaml  (substitutions fijas en el archivo)
+#   forrajero    -> config/forrajero.yaml     (usa substitutions del dashboard,
+#                  se resuelven a una copia en /tmp/forrajero_flash/)
+#   cuatroRelays -> config/cuatro_relays.yaml (ESP-12F 4 reles, substitutions fijas)
 #
 # El puerto por defecto es /dev/ttyUSB0 (CH341A). Se puede override por env:
 #   DEVICE_NAME=forrajero2 MQTT_HOST=mi-broker.local ./flasheador.sh forrajero
@@ -23,7 +25,7 @@ CACHE_DIR="/tmp/esphome_flash_cache"
 
 if [[ -z "$TARGET" ]]; then
   echo "ERROR: Falta el parametro target." >&2
-  echo "Uso: $0 <riegoTanque|forrajero> [puerto]" >&2
+  echo "Uso: $0 <riegoTanque|forrajero|cuatroRelays> [puerto]" >&2
   exit 1
 fi
 
@@ -40,9 +42,12 @@ case "$TARGET" in
   forrajero)
     YAML="forrajero.yaml"
     ;;
+  cuatroRelays|cuatro_relays|relays4)
+    YAML="cuatro_relays.yaml"
+    ;;
   *)
     echo "ERROR: Target desconocido '$TARGET'." >&2
-    echo "Uso: $0 <riegoTanque|forrajero> [puerto]" >&2
+    echo "Uso: $0 <riegoTanque|forrajero|cuatroRelays> [puerto]" >&2
     exit 1
     ;;
 esac
