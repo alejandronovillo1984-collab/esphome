@@ -104,10 +104,9 @@ wifi:
 
   # Hotspot de emergencia para debug/OTA en el campo
   ap:
-    ssid: "Repetidor Debug"
-    password: "7oMJPdiHIgb9"
+    ssid: Repetidor Debug
+    password: piteroski1984
     ap_timeout: 1min
-
 captive_portal:
 
 web_server:
@@ -380,12 +379,12 @@ spi:
     mosi_pin: GPIO10 # LoRa_MOSI
     miso_pin: GPIO11 # LoRa_MISO
 
-# Display TFT ST7735
+# Display TFT ST7735 - config validada por la comunidad Heltec Wireless Tracker
 display:
   - platform: ili9xxx
     spi_id: spi_st7735
     model: st7735
-    id: st7735
+    id: display_tft
     cs_pin: GPIO38 # CS
     reset_pin: GPIO39 # RES
     dc_pin: GPIO40 # RS
@@ -401,70 +400,16 @@ display:
       mirror_y: true
       mirror_x: false
     data_rate: 40MHz
-    auto_clear_enabled: true
+    auto_clear_enabled: false  # deshabilitado para diagnóstico
     lambda: |-
-      // Fila 1: Estado WiFi / IP a la izquierda y distintivo a la derecha
-      std::string wifi_str = "WiFi: APAGADO";
-      Color wifi_color = id(red);
-      if (id(wifi_comp).is_connected()) {
-        wifi_str = id(wifi_ip).state;
-        if (wifi_str.empty() || wifi_str == "0.0.0.0") {
-          wifi_str = "Conectando...";
-          wifi_color = id(yellow);
-        } else {
-          wifi_color = id(green);
-        }
-      } else {
-        if (id(wifi_is_enabled)) {
-          wifi_str = "Desconectado";
-        } else {
-          wifi_str = "WiFi: APAGADO";
-        }
-      }
-      it.print(0, 0, id(font_small), wifi_color, wifi_str.c_str());
-
-      bool is_gw = id(gateway_mode).state;
-      std::string role_str = is_gw ? "GATEWAY" : "REPETIDOR";
-      Color role_color = is_gw ? id(blue) : id(green);
-      it.print(160, 0, id(font_small), role_color, TextAlign::TOP_RIGHT, role_str.c_str());
-
-      // Línea divisoria elegante
-      it.line(0, 13, 160, 13, id(white));
-
-      // Título de Dispositivos en red
-      it.print(0, 18, id(font_small), id(yellow), "DISPOSITIVOS EN RED:");
-
-      // Listado de dispositivos activos en los últimos 10 min
-      uint32_t now_secs = millis() / 1000;
-      int y_pos = 32;
-      // Copiar nodos activos
-      std::vector<std::pair<std::string, lora_custom::DeviceInfo>> active_nodes;
-      for (auto const &d : lora_custom::get_last_seen_devices()) {
-        if (now_secs - d.second.last_seen_time < 600) {
-          active_nodes.push_back({d.first, d.second});
-        }
-      }
-
-      int count = 0;
-      for (auto const &d : active_nodes) {
-        char buf_dev[48];
-        if (d.second.type == 1) { // Compuerta
-          // • e5b5a4:95% ALIMENTANDO
-          snprintf(buf_dev, sizeof(buf_dev), "• %s:%.0f%% %s", 
-                   d.first.c_str(), d.second.food_pct, d.second.routine_state.c_str());
-        } else { // Repetidor/Gateway u otros
-          std::string type_str = (d.second.type == 2) ? "GW/REP" : "DESC";
-          snprintf(buf_dev, sizeof(buf_dev), "• %s:%s", 
-                   d.first.c_str(), type_str.c_str());
-        }
-        it.print(2, y_pos, id(font_small), id(white), buf_dev);
-        y_pos += 14;
-        count++;
-        if (count >= 3) break; // Caben 3 dispositivos cómodamente
-      }
-      if (count == 0) {
-        it.print(10, 36, id(font_small), id(red), "Sin dispositivos activos");
-      }
+      // ═══ LAMBDA DE DIAGNÓSTICO MÍNIMO ═══
+      // Si se ve: rojo arriba, verde en medio, azul abajo → ili9xxx OK, el lambda de producción crasheaba
+      // Si sigue negro → el driver ili9xxx no funciona en este dispositivo
+      it.fill(Color(0, 0, 0));          // fondo negro
+      it.filled_rectangle(0,  0, 160, 26, id(red));
+      it.filled_rectangle(0, 27, 160, 26, id(green));
+      it.filled_rectangle(0, 54, 160, 26, id(blue));
+      it.print(80, 35, id(font_small), id(white), TextAlign::CENTER, "GATEWAY TEST");
 
 # Fonts
 font:
@@ -501,13 +446,15 @@ color:
 # Switches and Controls
 switch:
   # Power (Display & GNSS)
+  # IMPORTANTE: ALWAYS_ON sin inverted → GPIO3 siempre HIGH → VEXT siempre encendido.
+  # Con inverted+RESTORE_DEFAULT_OFF, si el usuario guardó el estado ON desde HA,
+  # al reiniciar GPIO3 queda LOW (VEXT apagado) y la pantalla no tiene alimentación.
   - platform: gpio
     id: power
     name: "Power (Display & GNSS)"
-    restore_mode: RESTORE_DEFAULT_OFF
+    restore_mode: ALWAYS_ON
     pin:
       number: GPIO3
-      inverted: true
       mode:
         output: true
         pulldown: true

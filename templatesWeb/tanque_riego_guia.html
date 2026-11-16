@@ -236,6 +236,10 @@
           <td>Activar/desactivar programador</td>
           <td><code>.../switch/tanque_riego_programador_activo/command</code> = <code>ON</code>/<code>OFF</code></td>
         </tr>
+        <tr>
+          <td>Forzado manual (ignora rutina)</td>
+          <td><code>.../switch/tanque_riego_forzado_manual/command</code> = <code>ON</code>/<code>OFF</code></td>
+        </tr>
       </table>
     </div>
   </div>
@@ -342,6 +346,25 @@ mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
   -t 'tanque_riego-7a4e7c/button/tanque_riego_action_detener_riego/press' -m ''</pre>
   </div>
 
+  <h2>4b. Forzado manual (override de la rutina)</h2>
+  <div class="card">
+    <div class="warning">
+      ⚠️ Si activás el relay manualmente (<code>riego relay</code>), la rutina lo apaga al minuto siguiente
+      cuando no le toca regar. El switch <strong>forzado manual</strong> evita que la rutina intervenga.
+    </div>
+    <ul>
+      <li><strong>ON</strong> → ignora la rutina de riego y <strong>enciende la bomba</strong> (queda encendida hasta apagar el forzado).</li>
+      <li><strong>OFF</strong> → <strong>apaga la bomba</strong> y la rutina vuelve a mandar al minuto siguiente.</li>
+    </ul>
+    <pre># Encender forzado manual (bomba fija en ON, ignora rutina)
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
+  -t 'tanque_riego-7a4e7c/switch/tanque_riego_forzado_manual/command' -m ON
+
+# Apagar forzado manual (apaga la bomba)
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
+  -t 'tanque_riego-7a4e7c/switch/tanque_riego_forzado_manual/command' -m OFF</pre>
+  </div>
+
   <h2>5. Sincronizar fecha/hora manualmente</h2>
   <div class="card">
     <p>
@@ -436,6 +459,7 @@ mosquitto_sub -h mqtt.petraka.com.ar -u alejandro -P piteroski1984 \
       <tr><td><code>.../switch/..._riego_relay/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
       <tr><td><code>.../select/..._plan_riego/command</code></td><td>escritura</td><td><code>hoja verde frio</code> / <code>hoja verde calor</code> / <code>fruto frio</code> / <code>fruto calor</code> / <code>germinador frio</code> / <code>germinador calor</code></td></tr>
       <tr><td><code>.../switch/..._programador_activo/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
+      <tr><td><code>.../switch/..._forzado_manual/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code> (ignora rutina)</td></tr>
       <tr><td><code>.../number/..._duracion_riego_min/command</code></td><td>escritura</td><td><code>1</code>–<code>120</code></td></tr>
       <tr><td><code>.../datetime/..._fecha_hora/command</code></td><td>escritura</td><td><code>YYYY-MM-DD HH:MM:SS</code></td></tr>
       <tr><td><code>.../number/..._altura_tanque_cm/command</code></td><td>escritura</td><td>altura total del tanque</td></tr>

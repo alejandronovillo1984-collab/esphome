@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cstring>   // memcpy
 #include <queue>
+#include <mutex>
+#include <cstdlib>
 #include "esp_mac.h"
 
 namespace lora_custom {
@@ -107,7 +109,6 @@ inline bool is_valid_packet(const std::vector<uint8_t>& x) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Cache de dispositivos activos con telemetría extendida
 // ─────────────────────────────────────────────────────────────────────────────
-#include <mutex>
 
 struct DeviceInfo {
   uint32_t last_seen_time;

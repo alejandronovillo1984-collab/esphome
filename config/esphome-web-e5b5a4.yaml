@@ -31,6 +31,9 @@ globals:
   - id: routine_start_time
     type: uint32_t
     initial_value: "0"
+  - id: lora_last_rx_time
+    type: uint32_t
+    initial_value: "0"
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -186,10 +189,14 @@ time:
                 ESP_LOGW("scheduler", "La hora GPS aun no esta sincronizada. Omitiendo programacion.");
                 return;
               }
-              std::string hour_str = std::to_string(id(gnss_time).now().hour);
               std::string sched = id(schedule_input).state;
+              sched.erase(std::remove_if(sched.begin(), sched.end(), ::isspace), sched.end());
+              if (sched.empty()) {
+                ESP_LOGD("scheduler", "Horario vacio, rutina automatica deshabilitada.");
+                return;
+              }
+              std::string hour_str = std::to_string(id(gnss_time).now().hour);
               std::string search_target = "," + sched + ",";
-              search_target.erase(std::remove_if(search_target.begin(), search_target.end(), ::isspace), search_target.end());
               if (search_target.find("," + hour_str + ",") != std::string::npos) {
                 ESP_LOGI("scheduler", "Hora programada detectada (%s:00). Iniciando rutina de comida.", hour_str.c_str());
                 id(run_feeding_routine_script).execute();
@@ -265,6 +272,13 @@ display:
         time_clock_str = buf_time;
       }
       it.print(160, 0, id(font_small), id(white), TextAlign::TOP_RIGHT, time_clock_str.c_str());
+
+      // Indicador LoRa (y=11, centrado)
+      if (id(lora_last_rx_time) != 0 && millis() - id(lora_last_rx_time) < 60000UL) {
+        it.print(80, 11, id(font_small), id(green), TextAlign::TOP_CENTER, "ONLINE LORA");
+      } else {
+        it.print(80, 11, id(font_small), id(red), TextAlign::TOP_CENTER, "OFFLINE LORA");
+      }
 
       // Fila 2: Estado de la Rutina (Grande en el Medio)
       std::string state_str = id(feeder_cycle_state).state;
@@ -626,7 +640,7 @@ text:
     optimistic: true
     restore_value: true
     initial_value: "8,12,18"
-    min_length: 1
+    min_length: 0
     max_length: 64
 
 # Automated feeding routine sequence script
@@ -684,6 +698,14 @@ script:
       - delay: !lambda "return (int)id(gate_travel_time_num).state * 1000;"
       - switch.turn_off: close_switch
 
+  # Script para sonar la bocina (no bloqueante, usa segundos configurados)
+  - id: sonar_bocina_script
+    mode: single
+    then:
+      - switch.turn_on: bocina_relay
+      - delay: !lambda "return (int)id(bocina_secs_num).state * 1000;"
+      - switch.turn_off: bocina_relay
+
 # LoRa Module (SX1262)
 sx126x:
   id: sx_module
@@ -711,6 +733,9 @@ sx126x:
             ESP_LOGW("lora_rx", "Paquete inválido (magic incorrecto), ignorado.");
             return;
           }
+
+          // Registrar timestamp del último paquete LoRa válido recibido
+          id(lora_last_rx_time) = millis();
 
           uint8_t cmd_or_mac = x[2];
 
@@ -830,12 +855,10 @@ sx126x:
             return;
           }
 
-          // CMD 0x24: Sonar bocina 3 segundos
+          // CMD 0x24: Sonar bocina (segundos configurados en bocina_secs_num)
           if (cmd == CMD_HORN_3S) {
-            id(bocina_relay).turn_on();
-            delay(3000);
-            id(bocina_relay).turn_off();
-            ESP_LOGI("lora_cmd", "Bocina sonada 3s por LoRa");
+            id(sonar_bocina_script).execute();
+            ESP_LOGI("lora_cmd", "Bocina iniciada (%.0fs) por LoRa", id(bocina_secs_num).state);
             return;
           }
 
@@ -926,14 +949,12 @@ button:
     on_press:
       - script.execute: run_feeding_routine_script
 
-  # Botón Sonar Bocina Manual (3 segundos)
+  # Botón Sonar Bocina Manual (segundos configurables)
   - platform: template
-    name: "Sonar Bocina (3s)"
+    name: "Sonar Bocina (seg. config.)"
     icon: "mdi:volume-high"
     on_press:
-      - switch.turn_on: bocina_relay
-      - delay: 3s
-      - switch.turn_off: bocina_relay
+      - script.execute: sonar_bocina_script
 
 # User button
 binary_sensor:
@@ -1009,3 +1030,14 @@ text_sensor:
       char buf[30];
       now.strftime(buf, sizeof(buf), "%d/%m/%Y %H:%M:%S");
       return {buf};
+
+  - platform: template
+    name: "Estado Enlace LoRa"
+    id: lora_link_status
+    icon: "mdi:radio-tower"
+    update_interval: 5s
+    lambda: |-
+      if (id(lora_last_rx_time) == 0) return {std::string("OFFLINE LORA")};
+      uint32_t elapsed_ms = millis() - id(lora_last_rx_time);
+      if (elapsed_ms < 60000) return {std::string("ONLINE LORA")};
+      return {std::string("OFFLINE LORA")};

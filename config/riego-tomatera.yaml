@@ -1,0 +1,279 @@
+# ===================================================================
+# RIEGO TOMATERA V1 - ESP32 + 1 Rele
+# -------------------------------------------------------------------
+# Diseno AUTONOMO: riega por intervalos contados desde el arranque.
+# NO requiere internet, ni NTP, ni Home Assistant, ni router.
+# WiFi / HA / Web son OPCIONALES y nunca bloquean el riego.
+#
+# Logica: cada ${intervalo_default} h (configurable) enciende el rele
+# durante ${duracion_default} min (configurable).
+#
+# Pines a verificar segun tu modulo de rele:
+#   pin_rele: GPIO usado para el rele
+#   rele_invertido: "true" en modulos de rele activo en LOW (tipico
+#                   modulo chino de 1 canal). "false" si es activo HIGH.
+# ===================================================================
+substitutions:
+  # =================================================
+  # 1. IDENTIDAD DEL DISPOSITIVO (las completa el builder)
+  # =================================================
+  dev_name: "riego-tomatera"
+  dev_friendly_name: "Riego Tomatera"
+
+  # =================================================
+  # 2. TU WIFI (opcional: si no hay red, levanta su AP)
+  # =================================================
+  wifi_dev_ssid: !secret wifi_ssid
+  wifi_dev_pass: !secret wifi_password
+
+  # =================================================
+  # 3. HARDWARE
+  # =================================================
+  pin_rele: "23"           # GPIO del rele
+  rele_invertido: "true"   # "true" para modulos activos en LOW
+
+  # =================================================
+  # 4. VALORES POR DEFECTO DEL RIEGO
+  # =================================================
+  intervalo_default: "2"   # horas entre riegos
+  duracion_default: "2"    # minutos de riego
+  version_number: "V1.0.0"
+
+esphome:
+  name: ${dev_name}
+  friendly_name: ${dev_friendly_name}
+  name_add_mac_suffix: false
+  on_boot:
+    # Arranque tardio: las variables con restore ya fueron cargadas.
+    priority: -100
+    then:
+      # Seguridad: el rele siempre arranca apagado.
+      - switch.turn_off: rele_riego
+      - lambda: |-
+          id(riego_en_curso) = false;
+          id(riego_inicio_ms) = 0;
+      - if:
+          condition:
+            switch.is_on: regar_al_arrancar
+          then:
+            - script.execute: ejecutar_riego
+      - logger.log: "Riego Tomatera iniciado en modo autonomo."
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+
+# -------------------------------------------------------------------
+# RED OPCIONAL (nunca reinicia por falta de WiFi/HA)
+# -------------------------------------------------------------------
+wifi:
+  id: wifi_component
+  reboot_timeout: 0s
+  power_save_mode: none
+  # Modo AP puro: no hay red STA configurada, asi el AP no se reinicia
+  # constantemente al no encontrar la red. Ideal para operar sin red.
+  ap:
+    ssid: "AP-${dev_name}"
+    password: "riego12345"
+
+# captive_portal deshabilitado: en modo AP intercepta todo GET y tapa el panel.
+web_server:
+  port: 80
+  # local: true sirve la UI desde la flash (no depende de oi.esphome.io).
+  local: true
+
+api:
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+
+# -------------------------------------------------------------------
+# VARIABLES PERSISTENTES
+# -------------------------------------------------------------------
+globals:
+  # Segundos acumulados desde el ultimo riego. Se restaura tras un
+  # corte de luz para no inundar ni saltear el ciclo.
+  - id: segundos_desde_riego
+    type: uint32_t
+    restore_value: true
+    initial_value: "0"
+  # Bandera de riego en curso (no persistente).
+  - id: riego_en_curso
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: riego_inicio_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+# -------------------------------------------------------------------
+# PARAMETROS EDITABLES
+# -------------------------------------------------------------------
+number:
+  - platform: template
+    name: "Intervalo entre Riegos (h)"
+    id: intervalo_horas
+    icon: "mdi:timelapse"
+    optimistic: true
+    min_value: 1
+    max_value: 24
+    step: 1
+    mode: box
+    initial_value: ${intervalo_default}
+    restore_value: true
+
+  - platform: template
+    name: "Duracion Riego (min)"
+    id: duracion_riego_min
+    icon: "mdi:timer-sand"
+    optimistic: true
+    min_value: 1
+    max_value: 60
+    step: 1
+    mode: box
+    initial_value: ${duracion_default}
+    restore_value: true
+
+# -------------------------------------------------------------------
+# SWITCHES
+# -------------------------------------------------------------------
+switch:
+  - platform: gpio
+    id: rele_riego
+    internal: true
+    restore_mode: ALWAYS_OFF
+    pin:
+      number: ${pin_rele}
+      inverted: ${rele_invertido}
+
+  - platform: template
+    name: "Sistema Riego Habilitado"
+    id: habilitar_riego
+    icon: "mdi:power"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  - platform: template
+    name: "Regar al Arrancar"
+    id: regar_al_arrancar
+    icon: "mdi:restart"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+  - platform: restart
+    name: "Reiniciar Sistema"
+    id: btn_restart
+
+# -------------------------------------------------------------------
+# BOTONES
+# -------------------------------------------------------------------
+button:
+  - platform: template
+    name: "Regar Ahora"
+    id: btn_regar_ahora
+    icon: "mdi:water"
+    on_press:
+      - logger.log: "Riego manual iniciado."
+      - script.execute: ejecutar_riego
+
+  - platform: template
+    name: "Detener Riego"
+    id: btn_detener_riego
+    icon: "mdi:stop"
+    on_press:
+      - script.stop: ejecutar_riego
+      - switch.turn_off: rele_riego
+      - lambda: |-
+          id(riego_en_curso) = false;
+          id(riego_inicio_ms) = 0;
+          id(segundos_desde_riego) = 0;
+      - logger.log: "Riego detenido manualmente."
+
+# -------------------------------------------------------------------
+# LOGICA DE RIEGO
+# -------------------------------------------------------------------
+script:
+  - id: ejecutar_riego
+    mode: single
+    then:
+      - lambda: |-
+          id(riego_en_curso) = true;
+          id(riego_inicio_ms) = millis();
+      - switch.turn_on: rele_riego
+      - logger.log: "Rele de riego ENCENDIDO."
+      - delay: !lambda "return (uint32_t)(id(duracion_riego_min).state * 60000.0);"
+      - switch.turn_off: rele_riego
+      - lambda: |-
+          id(riego_en_curso) = false;
+          id(riego_inicio_ms) = 0;
+          id(segundos_desde_riego) = 0;
+      - logger.log: "Rele de riego APAGADO. Ciclo completado."
+
+interval:
+  # Tick de 1 s: cuenta el tiempo y aplica failsafe anti-inundacion.
+  - interval: 1s
+    then:
+      - lambda: |-
+          // Failsafe: si el rele quedo encendido mas de lo permitido, apagar.
+          if (id(riego_en_curso) && id(riego_inicio_ms) != 0) {
+            uint32_t max_ms = (uint32_t)(id(duracion_riego_min).state * 60000.0) + 20000UL;
+            if (millis() - id(riego_inicio_ms) > max_ms) {
+              ESP_LOGW("failsafe", "Riego excedido, forzando apagado del rele.");
+              id(rele_riego).turn_off();
+              id(riego_en_curso) = false;
+              id(riego_inicio_ms) = 0;
+              id(segundos_desde_riego) = 0;
+            }
+          }
+
+          if (!id(habilitar_riego).state) return;
+          if (id(riego_en_curso)) return;
+
+          id(segundos_desde_riego) += 1;
+          uint32_t objetivo = (uint32_t)id(intervalo_horas).state * 3600UL;
+          if (id(segundos_desde_riego) >= objetivo) {
+            id(segundos_desde_riego) = 0;
+            id(ejecutar_riego).execute();
+          }
+
+# -------------------------------------------------------------------
+# SENSORES DE ESTADO
+# -------------------------------------------------------------------
+sensor:
+  - platform: template
+    name: "Proximo Riego (s)"
+    id: proximo_riego_seg
+    icon: "mdi:timer-outline"
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      if (!id(habilitar_riego).state) return 0.0f;
+      uint32_t objetivo = (uint32_t)id(intervalo_horas).state * 3600UL;
+      if (id(segundos_desde_riego) >= objetivo) return 0.0f;
+      return (float)(objetivo - id(segundos_desde_riego));
+
+binary_sensor:
+  - platform: template
+    name: "Riego Activo"
+    id: riego_activo
+    icon: "mdi:water-pump"
+    lambda: |-
+      return id(rele_riego).state;
+
+text_sensor:
+  - platform: template
+    name: "Estado Riego"
+    id: estado_riego
+    icon: "mdi:water-pump"
+    update_interval: 5s
+    lambda: |-
+      if (!id(habilitar_riego).state) return {"Deshabilitado"};
+      if (id(rele_riego).state) return {"Regando..."};
+      return {"En espera"};
