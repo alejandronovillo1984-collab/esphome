@@ -51,7 +51,7 @@ substitutions:
   extras_default: "0"
 
   # Version de firmware reportada por MQTT.
-  fw_version: "1.0.6"
+  fw_version: "1.0.7"
 
 # ===================================================================
 # PREFERENCIAS / PERSISTENCIA
@@ -557,6 +557,28 @@ switch:
           }
       - logger.log: "Canal 1 programador OFF"
 
+  - platform: template
+    name: "${dev_name} canal 1 forzado manual"
+    id: forzado_c1
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    icon: "mdi:hand-back-right"
+    turn_on_action:
+      - script.stop: ejecutar_manual_c1
+      - lambda: |-
+          id(manual_c1) = true;
+          id(auto_c1) = true;
+      - switch.turn_on: relay_c1
+      - lambda: 'id(auto_c1) = false;'
+      - logger.log: "Canal 1 forzado manual ON"
+    turn_off_action:
+      - script.stop: ejecutar_manual_c1
+      - lambda: 'id(auto_c1) = true;'
+      - switch.turn_off: relay_c1
+      - lambda: 'id(auto_c1) = false;'
+      - lambda: 'id(manual_c1) = false;'
+      - logger.log: "Canal 1 forzado manual OFF"
+
   # ---- Canal 2 ----
   - platform: gpio
     pin: ${pin_r2}
@@ -589,6 +611,28 @@ switch:
             id(auto_c2) = false;
           }
       - logger.log: "Canal 2 programador OFF"
+
+  - platform: template
+    name: "${dev_name} canal 2 forzado manual"
+    id: forzado_c2
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    icon: "mdi:hand-back-right"
+    turn_on_action:
+      - script.stop: ejecutar_manual_c2
+      - lambda: |-
+          id(manual_c2) = true;
+          id(auto_c2) = true;
+      - switch.turn_on: relay_c2
+      - lambda: 'id(auto_c2) = false;'
+      - logger.log: "Canal 2 forzado manual ON"
+    turn_off_action:
+      - script.stop: ejecutar_manual_c2
+      - lambda: 'id(auto_c2) = true;'
+      - switch.turn_off: relay_c2
+      - lambda: 'id(auto_c2) = false;'
+      - lambda: 'id(manual_c2) = false;'
+      - logger.log: "Canal 2 forzado manual OFF"
 
   # ---- Canal 3 ----
   - platform: gpio
@@ -623,6 +667,28 @@ switch:
           }
       - logger.log: "Canal 3 programador OFF"
 
+  - platform: template
+    name: "${dev_name} canal 3 forzado manual"
+    id: forzado_c3
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    icon: "mdi:hand-back-right"
+    turn_on_action:
+      - script.stop: ejecutar_manual_c3
+      - lambda: |-
+          id(manual_c3) = true;
+          id(auto_c3) = true;
+      - switch.turn_on: relay_c3
+      - lambda: 'id(auto_c3) = false;'
+      - logger.log: "Canal 3 forzado manual ON"
+    turn_off_action:
+      - script.stop: ejecutar_manual_c3
+      - lambda: 'id(auto_c3) = true;'
+      - switch.turn_off: relay_c3
+      - lambda: 'id(auto_c3) = false;'
+      - lambda: 'id(manual_c3) = false;'
+      - logger.log: "Canal 3 forzado manual OFF"
+
   # ---- Canal 4 ----
   - platform: gpio
     pin: ${pin_r4}
@@ -655,6 +721,28 @@ switch:
             id(auto_c4) = false;
           }
       - logger.log: "Canal 4 programador OFF"
+
+  - platform: template
+    name: "${dev_name} canal 4 forzado manual"
+    id: forzado_c4
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    icon: "mdi:hand-back-right"
+    turn_on_action:
+      - script.stop: ejecutar_manual_c4
+      - lambda: |-
+          id(manual_c4) = true;
+          id(auto_c4) = true;
+      - switch.turn_on: relay_c4
+      - lambda: 'id(auto_c4) = false;'
+      - logger.log: "Canal 4 forzado manual ON"
+    turn_off_action:
+      - script.stop: ejecutar_manual_c4
+      - lambda: 'id(auto_c4) = true;'
+      - switch.turn_off: relay_c4
+      - lambda: 'id(auto_c4) = false;'
+      - lambda: 'id(manual_c4) = false;'
+      - logger.log: "Canal 4 forzado manual OFF"
 
 # ===================================================================
 # BUTTONS
@@ -776,6 +864,7 @@ script:
           select::Select *modos[4] = {id(modo_c1), id(modo_c2), id(modo_c3), id(modo_c4)};
           number::Number *extras[4] = {id(extras_c1), id(extras_c2), id(extras_c3), id(extras_c4)};
           switch_::Switch *progs[4] = {id(prog_c1), id(prog_c2), id(prog_c3), id(prog_c4)};
+          switch_::Switch *forzados[4] = {id(forzado_c1), id(forzado_c2), id(forzado_c3), id(forzado_c4)};
           switch_::Switch *rels[4] = {id(relay_c1), id(relay_c2), id(relay_c3), id(relay_c4)};
           bool *manual[4] = {&id(manual_c1), &id(manual_c2), &id(manual_c3), &id(manual_c4)};
           bool *auto_flags[4] = {&id(auto_c1), &id(auto_c2), &id(auto_c3), &id(auto_c4)};
@@ -890,6 +979,10 @@ script:
             int modo = (int) modos[ch]->active_index().value_or(0);
             switch_::Switch *rel = rels[ch];
 
+            // Forzado manual: el rele queda como lo dejo el switch, sin que
+            // el plan ni el modo lo pisen.
+            if (forzados[ch]->state) continue;
+
             // Modo apagado: siempre OFF, sin importar hora/programador.
             if (modo == 0) {
               if (rel->state) {
@@ -936,6 +1029,7 @@ script:
   - id: ejecutar_manual_c1
     mode: restart
     then:
+      - lambda: 'id(forzado_c1).publish_state(false);'
       - globals.set:
           id: manual_c1
           value: 'true'
@@ -953,6 +1047,7 @@ script:
   - id: ejecutar_manual_c2
     mode: restart
     then:
+      - lambda: 'id(forzado_c2).publish_state(false);'
       - globals.set:
           id: manual_c2
           value: 'true'
@@ -970,6 +1065,7 @@ script:
   - id: ejecutar_manual_c3
     mode: restart
     then:
+      - lambda: 'id(forzado_c3).publish_state(false);'
       - globals.set:
           id: manual_c3
           value: 'true'
@@ -987,6 +1083,7 @@ script:
   - id: ejecutar_manual_c4
     mode: restart
     then:
+      - lambda: 'id(forzado_c4).publish_state(false);'
       - globals.set:
           id: manual_c4
           value: 'true'
