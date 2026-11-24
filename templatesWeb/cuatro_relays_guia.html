@@ -120,7 +120,7 @@
 <body>
 <div class="container">
   <h1>ESP8266 - Placa de 4 Relés</h1>
-  <p class="subtitle">Dispositivo: <code>cuatro_relays</code> - Broker: <code>mqtt.petraka.com.ar:1883</code> - Firmware: ESPHome</p>
+  <p class="subtitle">Dispositivo: <code>cuatro_relays</code> - Broker: <code>mqtt.petraka.com.ar:1883</code> - Firmware: ESPHome (1.0.7)</p>
 
   <div class="danger">
     <strong>Seguridad electrica:</strong> esta placa puede alimentarse con <strong>90-250 VAC</strong>.
@@ -270,6 +270,11 @@
         <td><code>ON</code>/<code>OFF</code>: control manual directo del rele.</td>
       </tr>
       <tr>
+        <td>Forzado manual</td>
+        <td><code class="topic">.../switch/cuatro_relays_canal_X_forzado_manual/command</code><span class="tag tag-write">escritura</span></td>
+        <td><code>ON</code>/<code>OFF</code>: prende el rele e ignora la rutina (modo, horario y programador) hasta apagarlo.</td>
+      </tr>
+      <tr>
         <td>Accionar ahora</td>
         <td><code class="topic">.../button/cuatro_relays_canal_X_accionar_ahora/command</code><span class="tag tag-write">escritura</span></td>
         <td>Payload <code>PRESS</code>. Enciende por la duracion manual.</td>
@@ -387,6 +392,7 @@
       <li><strong>Modo manual:</strong> el plan no toca el rele; usa el switch <code>relay</code>.</li>
       <li><strong>Accionar ahora:</strong> enciende el canal durante <code>duracion manual min</code>, aunque el modo sea un plan. Mientras dura, el plan no lo pisa.</li>
       <li><strong>Detener:</strong> corta el accionar manual y apaga el rele. Si el modo es un plan y el programador sigue ON, el proximo minuto puede volver a encenderlo; para detenerlo del todo pasa el modo a <code>apagado</code> o apaga el programador.</li>
+      <li><strong>Forzado manual:</strong> enciende el canal y lo mantiene encendido de forma indefinida, ignorando modo, horario y programador (firmware 1.0.7 en adelante). Al apagarlo, el relay se apaga y la rutina normal vuelve a mandar. No se guarda en flash: tras un reinicio arranca apagado. Es mutuamente excluyente con <code>accionar ahora</code> (activar uno cancela el otro).</li>
     </ul>
     <div class="info" style="margin-top:12px;">
       <strong>Control manual:</strong> al encender el switch <code>relay</code> desde MQTT o un botón,
@@ -465,6 +471,13 @@ mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
     <h3>Detener el canal 1</h3>
     <pre>mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
   -t 'cuatro_relays-7a4e7c/button/cuatro_relays_canal_1_detener/command' -m 'PRESS'</pre>
+
+    <h3>Forzado manual del canal 1 (encender / apagar)</h3>
+    <pre>mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'cuatro_relays-7a4e7c/switch/cuatro_relays_canal_1_forzado_manual/command' -m 'ON'
+
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'cuatro_relays-7a4e7c/switch/cuatro_relays_canal_1_forzado_manual/command' -m 'OFF'</pre>
   </div>
 
   <div class="card">
@@ -482,6 +495,9 @@ client.publish(`${DEV}/number/cuatro_relays_canal_2_duracion_manual_min/command`
 client.publish(`${DEV}/switch/cuatro_relays_canal_2_programador/command`, 'ON');
 client.publish(`${DEV}/button/cuatro_relays_canal_2_accionar_ahora/command`, 'PRESS');
 
+// Forzado manual: toma el control e ignora la rutina hasta publicar 'OFF'
+client.publish(`${DEV}/switch/cuatro_relays_canal_2_forzado_manual/command`, 'ON');
+
 // Leer estado del relay
 client.subscribe(`${DEV}/switch/cuatro_relays_canal_2_relay/state`);</pre>
   </div>
@@ -496,6 +512,7 @@ client.subscribe(`${DEV}/switch/cuatro_relays_canal_2_relay/state`);</pre>
       <tr><td><code>.../number/..._canal_X_duracion_manual_min/command</code></td><td>escritura</td><td><code>1</code>-<code>120</code></td></tr>
       <tr><td><code>.../switch/..._canal_X_programador/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
       <tr><td><code>.../switch/..._canal_X_relay/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
+      <tr><td><code>.../switch/..._canal_X_forzado_manual/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code> (ignora la rutina)</td></tr>
       <tr><td><code>.../button/..._canal_X_accionar_ahora/command</code></td><td>escritura</td><td><code>PRESS</code></td></tr>
       <tr><td><code>.../button/..._canal_X_detener/command</code></td><td>escritura</td><td><code>PRESS</code></td></tr>
       <tr><td><code>.../sensor/firmware_version/state</code></td><td>lectura</td><td>version del firmware</td></tr>
@@ -511,6 +528,7 @@ client.subscribe(`${DEV}/switch/cuatro_relays_canal_2_relay/state`);</pre>
       <li><strong>Relay 1 pulsa al energizar:</strong> es por GPIO16. Mover el jumper a GPIO15 y cambiar <code>pin_r1</code> a <code>"15"</code>.</li>
       <li><strong>No arranca o reinicia:</strong> revisar que GPIO0, GPIO12 y GPIO15 queden en el nivel correcto al boot; desconectar cargas y probar solo con la placa.</li>
       <li><strong>No aplica horarios:</strong> verificar que el programador este ON, que el modo no sea <code>apagado</code>/<code>manual</code> y que la hora sea valida.</li>
+      <li><strong>El rele queda siempre encendido:</strong> revisar que el <code>forzado manual</code> del canal no este en <code>ON</code>; mientras lo este, se ignora la rutina (modo, horario y programador).</li>
       <li><strong>No se ve en MQTT:</strong> el prefijo se arma con el nombre y los ultimos 6 de la MAC (<code>cuatro_relays-&lt;mac&gt;</code>); revisar usuario/clave del broker.</li>
       <li><strong>El OTA falla:</strong> verificar que la URL sea accesible por HTTP/HTTPS y que el MD5 sea el del binario exacto.</li>
       <li><strong>La página web principal no carga:</strong> la 1.0.6 no incluye la UI <code>web_server</code> para ahorrar RAM. El captive portal y <code>/update</code> siguen disponibles; el control es por MQTT.</li>

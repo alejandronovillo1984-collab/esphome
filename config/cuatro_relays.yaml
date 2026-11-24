@@ -15,8 +15,13 @@
 # el GPIO cambia de estado pero el rele fisico NO se mueve.
 # Driver: transistor NPN + rele de 5V => activo en ALTO (inverted: false).
 #
-# Cada canal tiene su propio modo, tiempos, programador y estado.
+# Cada canal tiene su propio modo, tiempos, programador, forzado manual y estado.
 # Modos: apagado, manual, 6 planes de riego del tanque y "germinadora".
+#
+# Forzado manual (forzado_c1..c4, fw 1.0.7+): switch por canal que enciende el
+# rele y lo mantiene encendido de forma indefinida, ignorando modo, horario y
+# programador. Al apagarlo el rele se apaga y la rutina vuelve a mandar. Se
+# restaura siempre apagado tras un reinicio (restore_mode: ALWAYS_OFF).
 # ===================================================================
 
 substitutions:
