@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ESP32 - Riego Césped 4 Zonas | Conexionado, Horarios y MQTT</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    line-height: 1.6;
+    padding: 24px;
+  }
+  .container { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 1.8rem; margin-bottom: 4px; }
+  .subtitle { color: #94a3b8; margin-bottom: 24px; }
+  h2 {
+    font-size: 1.25rem;
+    margin: 32px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #334155;
+    color: #38bdf8;
+  }
+  h3, h4 { color: #38bdf8; margin: 12px 0 8px; }
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid #334155;
+    font-size: 0.9rem;
+    vertical-align: top;
+  }
+  th { color: #94a3b8; font-weight: 600; }
+  code {
+    background: #0f172a;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Consolas', monospace;
+    font-size: 0.85rem;
+    color: #fbbf24;
+  }
+  pre {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    font-family: 'Consolas', monospace;
+    font-size: 0.85rem;
+    color: #86efac;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .pin-table td:first-child { font-weight: 700; }
+  .pin-esp { color: #38bdf8; font-weight: 700; }
+  .topic { color: #fbbf24; }
+  .tag {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-left: 8px;
+  }
+  .tag-write { background: #166534; color: #bbf7d0; }
+  .tag-read { background: #3730a3; color: #c7d2fe; }
+  .warning {
+    background: #7f2d0f;
+    border: 1px solid #f55e1f;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    color: #fed7aa;
+  }
+  .danger {
+    background: #450a0a;
+    border: 1px solid #ef4444;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    color: #fecaca;
+  }
+  .info {
+    background: #164e63;
+    border: 1px solid #22d3ee;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    color: #cffafe;
+  }
+  ul, ol { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .zone-tag {
+    display: inline-block; padding: 3px 12px; border-radius: 999px;
+    font-size: .8rem; font-weight: 700;
+  }
+  .z-1 { background:#14532d; color:#bbf7d0; }
+  .z-2 { background:#166534; color:#dcfce7; }
+  .z-3 { background:#3730a3; color:#c7d2fe; }
+  .z-4 { background:#1e40af; color:#dbeafe; }
+  .small { font-size: .85rem; color: #94a3b8; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>ESP32 - Riego Césped 4 Zonas</h1>
+  <p class="subtitle">Dispositivo: <code>riego_cesped</code> - Broker: <code>mqtt.petraka.com.ar:1883</code> - Firmware: ESPHome (1.0.0)</p>
+
+  <div class="danger">
+    <strong>Seguridad eléctrica:</strong> las electroválvulas de riego suelen trabajar con 24 VAC.
+    No manipules el tablero con la alimentación conectada. Si usás una bomba de 220 VAC,
+    manejala con un contactor externo y no directamente desde el relé de la placa.
+  </div>
+
+  <div class="warning">
+    <strong>Nivel de activación:</strong> por defecto los relés se manejan como
+    <strong>activos en alto</strong> (<code>relay_inverted: "false"</code>).
+    Muchos módulos de relé chinos son <strong>activos en bajo</strong>. Si la válvula queda
+    abierta cuando debería estar cerrada, cambiá la substitution
+    <code>relay_inverted</code> a <code>"true"</code>.
+  </div>
+
+  <h2>1. Hardware y pines</h2>
+  <div class="card">
+    <table class="pin-table">
+      <tr><th>Zona</th><th>GPIO ESP32</th><th>Nota</th></tr>
+      <tr><td>Zona 1</td><td class="pin-esp">GPIO25</td><td>Salida segura, sin strapping.</td></tr>
+      <tr><td>Zona 2</td><td class="pin-esp">GPIO23</td><td>Salida segura, sin strapping.</td></tr>
+      <tr><td>Zona 3</td><td class="pin-esp">GPIO22</td><td>Salida segura, sin strapping.</td></tr>
+      <tr><td>Zona 4</td><td class="pin-esp">GPIO21</td><td>Salida segura, sin strapping.</td></tr>
+      <tr><td>Programación</td><td class="pin-esp">USB / UART</td><td>Placa ESP32 DevKit (esp32dev).</td></tr>
+    </table>
+  </div>
+  <div class="info">
+    Si tu placa usa otros pines, cambialos en las substitutions <code>pin_r1</code> a <code>pin_r4</code>.
+    Evitá GPIO0, GPIO2, GPIO12 y GPIO15 (strapping) y GPIO34-39 (solo entrada).
+  </div>
+
+  <h2>2. Conexión MQTT</h2>
+  <div class="card">
+    <p>
+      El dispositivo publica con un prefijo dinámico formado por el nombre y los últimos 6
+      caracteres de la MAC: <code class="topic">riego_cesped-&lt;mac&gt;</code>.
+      El identificador visible es <code>RC-&lt;mac&gt;</code>.
+    </p>
+    <p style="margin-top:8px;">
+      Ejemplo: si la MAC termina en <code>7a4e7c</code>, el prefijo es
+      <code class="topic">riego_cesped-7a4e7c/</code>.
+    </p>
+    <p style="margin-top:8px;">
+      Al conectar publica <code>online</code> en <code class="topic">&lt;prefijo&gt;/status</code>.
+      Si se cae la conexión, el broker publica <code>offline</code> como last will.
+    </p>
+  </div>
+
+  <h2>2.1 WiFi y AP de configuración</h2>
+  <div class="card">
+    <p>El equipo primero intenta conectarse a la red configurada en <code>config/secrets.yaml</code>.
+      Si la encuentra, queda en esa red con IP asignada por DHCP y <strong>no</strong> levanta un AP propio.</p>
+    <p style="margin-top:8px;">Si no puede conectarse, después de ~20 segundos levanta el AP de configuración:</p>
+    <table>
+      <tr><th>Parámetro</th><th>Valor</th></tr>
+      <tr><td>SSID del AP</td><td><code>riego_cesped-&lt;mac&gt;</code></td></tr>
+      <tr><td>Clave del AP</td><td><code>centenario123</code></td></tr>
+      <tr><td>IP del AP</td><td><code>192.168.4.1</code></td></tr>
+      <tr><td>Portal cautivo</td><td>Sí, para configurar otra red WiFi</td></tr>
+      <tr><td>Web local</td><td><code>http://&lt;ip-del-equipo&gt;</code> (puerto 80)</td></tr>
+    </table>
+    <p class="small" style="margin-top:8px;">
+      Mientras está en modo AP, el MQTT se deshabilita para liberar RAM. Al guardar una red WiFi
+      desde el portal, el equipo se reinicia y se conecta a la red nueva.
+    </p>
+  </div>
+
+  <h2>3. Entidades por zona</h2>
+  <p class="small">Reemplaza <code>X</code> por <code>1</code>, <code>2</code>, <code>3</code> o <code>4</code>.</p>
+
+  <div class="card">
+    <table>
+      <tr><th>Entidad</th><th>Tópico</th><th>Uso</th></tr>
+      <tr>
+        <td>Horario</td>
+        <td><code class="topic">.../text/riego_cesped_zona_X_horario/command</code><span class="tag tag-write">escritura</span></td>
+        <td>Horas separadas por coma, ej. <code>6,18,20</code>. También <code>6:30,18:00</code>.</td>
+      </tr>
+      <tr>
+        <td>Horario actual</td>
+        <td><code class="topic">.../text/riego_cesped_zona_X_horario/state</code><span class="tag tag-read">lectura</span></td>
+        <td>Valor vigente guardado en flash.</td>
+      </tr>
+      <tr>
+        <td>Duración</td>
+        <td><code class="topic">.../number/riego_cesped_zona_X_duracion_min/command</code><span class="tag tag-write">escritura</span></td>
+        <td><code>1</code>-<code>120</code> minutos por evento.</td>
+      </tr>
+      <tr>
+        <td>Zona activa</td>
+        <td><code class="topic">.../switch/riego_cesped_zona_X_activa/command</code><span class="tag tag-write">escritura</span></td>
+        <td><code>ON</code>/<code>OFF</code>: habilita o deshabilita el riego automático de la zona.</td>
+      </tr>
+      <tr>
+        <td>Relé</td>
+        <td><code class="topic">.../switch/riego_cesped_zona_X_relay/command</code><span class="tag tag-write">escritura</span></td>
+        <td><code>ON</code>/<code>OFF</code>: control manual directo de la válvula.</td>
+      </tr>
+      <tr>
+        <td>Forzado manual</td>
+        <td><code class="topic">.../switch/riego_cesped_zona_X_forzado_manual/command</code><span class="tag tag-write">escritura</span></td>
+        <td><code>ON</code>/<code>OFF</code>: abre la válvula e ignora la rutina hasta apagarlo.</td>
+      </tr>
+      <tr>
+        <td>Accionar ahora</td>
+        <td><code class="topic">.../button/riego_cesped_zona_X_accionar_ahora/command</code><span class="tag tag-write">escritura</span></td>
+        <td>Payload <code>PRESS</code>. Riega durante la duración configurada.</td>
+      </tr>
+      <tr>
+        <td>Detener</td>
+        <td><code class="topic">.../button/riego_cesped_zona_X_detener/command</code><span class="tag tag-write">escritura</span></td>
+        <td>Payload <code>PRESS</code>. Cancela el riego y apaga el relé.</td>
+      </tr>
+      <tr>
+        <td>Estado</td>
+        <td><code class="topic">.../sensor/riego_cesped_zona_X_estado/state</code><span class="tag tag-read">lectura</span></td>
+        <td><code>esperando</code> / <code>regando</code> / <code>forzado</code> / <code>deshabilitada</code>.</td>
+      </tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Entidades generales</h3>
+    <table>
+      <tr><th>Entidad</th><th>Tópico</th></tr>
+      <tr><td>Programador general</td><td><code class="topic">.../switch/riego_cesped_programador_activo/command</code></td></tr>
+      <tr><td>Hora actual</td><td><code class="topic">.../sensor/riego_cesped_hora_actual/state</code></td></tr>
+      <tr><td>Device ID</td><td><code class="topic">.../sensor/riego_cesped_device_id/state</code></td></tr>
+      <tr><td>Fecha/hora manual</td><td><code class="topic">.../datetime/riego_cesped_config_fecha_hora/command</code></td></tr>
+      <tr><td>Versión de firmware</td><td><code class="topic">.../sensor/firmware_version/state</code></td></tr>
+      <tr><td>OTA</td><td><code class="topic">.../text/ota_firmware/command</code> = <code>URL|MD5</code></td></tr>
+      <tr><td>Estado OTA</td><td><code class="topic">.../text/ota_status/state</code></td></tr>
+    </table>
+  </div>
+
+  <h2>4. Programación de horarios</h2>
+  <div class="card">
+    <p>Cada zona tiene su propio campo de texto <strong>horario</strong>. El formato es una lista de
+      horas separadas por coma:</p>
+    <table>
+      <tr><th>Valor</th><th>Significado</th></tr>
+      <tr><td><code>6,18,20</code></td><td>Riega a las 06:00, 18:00 y 20:00.</td></tr>
+      <tr><td><code>7:30,19:00</code></td><td>Riega a las 07:30 y 19:00 (formato con minutos).</td></tr>
+      <tr><td><code>5</code></td><td>Un único riego diario a las 05:00.</td></tr>
+      <tr><td><code>(vacío)</code></td><td>No riega (equivale a zona deshabilitada).</td></tr>
+    </table>
+    <div class="info" style="margin-top:12px;">
+      <strong>Cómo se ejecuta:</strong>
+      <ul style="margin-top:6px;">
+        <li>Las horas sin minutos (<code>6</code>) disparan al inicio de esa hora (<code>06:00</code>).</li>
+        <li>Si el equipo arranca dentro de una hora programada y todavía no regó en esa hora,
+            arranca en el minuto siguiente (recuperación tras corte de luz).</li>
+        <li>Las zonas programadas se ejecutan <strong>de a una por vez</strong>. Si dos o más zonas
+            coinciden en el mismo horario, se encolan y arrancan cuando termina la anterior.</li>
+        <li>La duración de cada zona se configura con <code>duracion min</code>.</li>
+        <li>Con el <strong>programador general OFF</strong> no se dispara ninguna zona.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Ejemplo: 4 zonas con horarios distintos</h3>
+  <div class="card">
+    <table>
+      <tr><th>Zona</th><th>Horario</th><th>Duración</th><th>Resultado</th></tr>
+      <tr><td><span class="zone-tag z-1">Zona 1</span></td><td><code>6,18</code></td><td>10 min</td><td>06:00-06:10 y 18:00-18:10</td></tr>
+      <tr><td><span class="zone-tag z-2">Zona 2</span></td><td><code>6,18</code></td><td>10 min</td><td>Arranca al terminar la Zona 1 (~06:10 y 18:10)</td></tr>
+      <tr><td><span class="zone-tag z-3">Zona 3</span></td><td><code>7,19</code></td><td>15 min</td><td>07:00-07:15 y 19:00-19:15</td></tr>
+      <tr><td><span class="zone-tag z-4">Zona 4</span></td><td><code>6:30,20</code></td><td>5 min</td><td>06:30-06:35 y 20:00-20:05</td></tr>
+    </table>
+  </div>
+
+  <h2>5. Controles manuales</h2>
+  <div class="card">
+    <ul>
+      <li><strong>Zona activa ON:</strong> la zona participa de los horarios programados.</li>
+      <li><strong>Zona activa OFF:</strong> la zona no riega automáticamente. Si hay un riego en curso,
+          lo corta. El control manual y el forzado siguen disponibles.</li>
+      <li><strong>Accionar ahora:</strong> abre la válvula durante <code>duracion min</code>,
+          sin importar el horario. Se puede usar aunque la zona esté deshabilitada.</li>
+      <li><strong>Detener:</strong> cancela el riego de esa zona y apaga el relé (también apaga el forzado).</li>
+      <li><strong>Forzado manual:</strong> abre la válvula de forma indefinida e ignora horarios,
+          programador y zona activa. Al apagarlo, la rutina vuelve a mandar. No se guarda en flash:
+          tras un reinicio arranca apagado.</li>
+      <li><strong>Programador general OFF:</strong> detiene toda la rutina automática. Los controles
+          manuales siguen funcionando.</li>
+    </ul>
+    <div class="warning" style="margin-top:12px;">
+      El firmware apaga un relé que haya quedado encendido sin una rutina en curso. Si encendés
+      <code>relay</code> directamente por MQTT para una prueba, se apagará en el próximo minuto;
+      para un encendido sostenido usá <code>forzado manual</code>, y para uno temporizado usá
+      <code>accionar ahora</code>.
+    </div>
+  </div>
+
+  <h2>6. Fecha y hora</h2>
+  <div class="card">
+    <p>El equipo sincroniza por NTP. Si no tiene internet, guarda el último epoch válido en flash
+      y lo restaura al arrancar, de modo que los horarios suelen seguir funcionando tras un corte.</p>
+    <p style="margin-top:8px;">Si la hora no es correcta podés setearla manualmente por MQTT:</p>
+    <pre>mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'riego_cesped-&lt;mac&gt;/datetime/riego_cesped_config_fecha_hora/command' \
+  -m '2026-09-21 18:30:00'</pre>
+    <p class="small" style="margin-top:8px;">Cuando vuelve internet, el NTP corrige la hora sola.</p>
+  </div>
+
+  <h2>7. OTA remoto y versión de firmware</h2>
+  <div class="card">
+    <p>La app publica el binario y su MD5 en:</p>
+    <pre>riego_cesped-&lt;mac&gt;/text/ota_firmware/command   ->   URL|MD5</pre>
+    <p>El equipo responde en:</p>
+    <pre>riego_cesped-&lt;mac&gt;/text/ota_status/state        ->   descargando | ok | error: ...</pre>
+    <p>Y reporta la versión instalada en:</p>
+    <pre>riego_cesped-&lt;mac&gt;/sensor/firmware_version/state</pre>
+    <p style="margin-top:8px;">
+      El MD5 debe tener 32 caracteres hexadecimales. El equipo lo verifica antes de flashear.
+      Si el OTA tiene éxito, el equipo se reinicia solo.
+    </p>
+    <p class="small" style="margin-top:8px;">
+      También hay OTA local por red (puerto 3232) y por USB con <code>./flasheador.sh riegoCesped</code>.
+    </p>
+  </div>
+
+  <h2>8. Flasheo por USB</h2>
+  <div class="card">
+    <ol>
+      <li>Conectar la placa ESP32 por USB (adaptador CH341A o USB nativo).</li>
+      <li>Verificar el puerto (<code>/dev/ttyUSB0</code> o <code>/dev/ttyUSB1</code>).</li>
+      <li>Ejecutar:</li>
+    </ol>
+    <pre>./flasheador.sh riegoCesped /dev/ttyUSB0</pre>
+    <p style="margin-top:8px;">Ver logs seriales:</p>
+    <pre>docker run --rm --privileged -v /tmp/esphome_flash_cache/riegoCesped:/config \
+  --device /dev/ttyUSB0:/dev/ttyUSB0 \
+  ghcr.io/esphome/esphome logs riego_cesped.yaml --device /dev/ttyUSB0 --reset</pre>
+    <p class="small">También podés compilar y subir por red:</p>
+    <pre>docker exec esphome esphome compile riego_cesped.yaml
+docker exec esphome esphome upload riego_cesped.yaml --device &lt;ip&gt;</pre>
+  </div>
+
+  <h2>9. Ejemplos MQTT</h2>
+  <div class="card">
+    <h3>Configurar horario, duración y habilitar la Zona 1</h3>
+    <pre>mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'riego_cesped-7a4e7c/text/riego_cesped_zona_1_horario/command' -m '6,18,20'
+
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'riego_cesped-7a4e7c/number/riego_cesped_zona_1_duracion_min/command' -m '10'
+
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'riego_cesped-7a4e7c/switch/riego_cesped_zona_1_activa/command' -m 'ON'</pre>
+
+    <h3>Activar el programador general</h3>
+    <pre>mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'riego_cesped-7a4e7c/switch/riego_cesped_programador_activo/command' -m 'ON'</pre>
+
+    <h3>Riego manual temporizado / detener</h3>
+    <pre>mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'riego_cesped-7a4e7c/button/riego_cesped_zona_2_accionar_ahora/command' -m 'PRESS'
+
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'riego_cesped-7a4e7c/button/riego_cesped_zona_2_detener/command' -m 'PRESS'</pre>
+
+    <h3>Forzado manual de la Zona 3 (encender / apagar)</h3>
+    <pre>mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'riego_cesped-7a4e7c/switch/riego_cesped_zona_3_forzado_manual/command' -m 'ON'
+
+mosquitto_pub -h mqtt.petraka.com.ar -u alejandro -P '***' \
+  -t 'riego_cesped-7a4e7c/switch/riego_cesped_zona_3_forzado_manual/command' -m 'OFF'</pre>
+  </div>
+
+  <div class="card">
+    <h3>Ejemplo JavaScript (mqtt.js)</h3>
+    <pre>const DEV = 'riego_cesped-7a4e7c';
+
+// Zona 1: regar a las 6, 18 y 20 durante 10 minutos
+client.publish(`${DEV}/text/riego_cesped_zona_1_horario/command`, '6,18,20');
+client.publish(`${DEV}/number/riego_cesped_zona_1_duracion_min/command`, '10');
+client.publish(`${DEV}/switch/riego_cesped_zona_1_activa/command`, 'ON');
+
+// Programador general
+client.publish(`${DEV}/switch/riego_cesped_programador_activo/command`, 'ON');
+
+// Riego manual de 5 minutos (cambiando la duración) y detener
+client.publish(`${DEV}/number/riego_cesped_zona_2_duracion_min/command`, '5');
+client.publish(`${DEV}/button/riego_cesped_zona_2_accionar_ahora/command`, 'PRESS');
+client.publish(`${DEV}/button/riego_cesped_zona_2_detener/command`, 'PRESS');
+
+// Leer estados
+client.subscribe(`${DEV}/sensor/riego_cesped_zona_1_estado/state`);
+client.subscribe(`${DEV}/switch/riego_cesped_zona_1_relay/state`);</pre>
+  </div>
+
+  <h2>10. Referencia rápida de tópicos</h2>
+  <div class="card">
+    <table>
+      <tr><th>Tópico</th><th>Dirección</th><th>Payload</th></tr>
+      <tr><td><code>.../text/..._zona_X_horario/command</code></td><td>escritura</td><td><code>6,18,20</code> / <code>6:30,18:00</code></td></tr>
+      <tr><td><code>.../text/..._zona_X_horario/state</code></td><td>lectura</td><td>horario vigente</td></tr>
+      <tr><td><code>.../number/..._zona_X_duracion_min/command</code></td><td>escritura</td><td><code>1</code>-<code>120</code></td></tr>
+      <tr><td><code>.../switch/..._zona_X_activa/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
+      <tr><td><code>.../switch/..._zona_X_relay/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
+      <tr><td><code>.../switch/..._zona_X_forzado_manual/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code> (ignora la rutina)</td></tr>
+      <tr><td><code>.../button/..._zona_X_accionar_ahora/command</code></td><td>escritura</td><td><code>PRESS</code></td></tr>
+      <tr><td><code>.../button/..._zona_X_detener/command</code></td><td>escritura</td><td><code>PRESS</code></td></tr>
+      <tr><td><code>.../switch/..._programador_activo/command</code></td><td>escritura</td><td><code>ON</code> / <code>OFF</code></td></tr>
+      <tr><td><code>.../sensor/firmware_version/state</code></td><td>lectura</td><td>versión del firmware</td></tr>
+      <tr><td><code>.../text/ota_firmware/command</code></td><td>escritura</td><td><code>URL|MD5</code></td></tr>
+      <tr><td><code>.../text/ota_status/state</code></td><td>lectura</td><td><code>descargando</code> / <code>ok</code> / <code>error: ...</code></td></tr>
+    </table>
+  </div>
+
+  <h2>11. Problemas frecuentes</h2>
+  <div class="card">
+    <ul>
+      <li><strong>La válvula trabaja invertida:</strong> cambiar <code>relay_inverted</code> de <code>"false"</code> a <code>"true"</code>.</li>
+      <li><strong>No riega a la hora programada:</strong> verificar que el <strong>programador general</strong> esté ON,
+          que la <strong>zona</strong> esté activa, que el horario tenga el formato correcto y que la hora del equipo sea válida.</li>
+      <li><strong>Se encolan las zonas:</strong> es normal. El riego programado es secuencial para no abrir
+          varias válvulas a la vez. Ajustá los horarios si no querés que se solapen.</li>
+      <li><strong>Riega de nuevo la misma hora:</strong> no debería; el equipo guarda en flash el último disparo
+          por zona. Si pasa, revisar la hora (puede haber saltado por NTP) y reiniciar.</li>
+      <li><strong>El relé queda siempre encendido:</strong> revisar que <code>forzado manual</code> no esté en ON.</li>
+      <li><strong>No se ve en MQTT:</strong> el prefijo se arma con el nombre y los últimos 6 de la MAC
+          (<code>riego_cesped-&lt;mac&gt;</code>); revisar usuario/clave del broker.</li>
+      <li><strong>El OTA falla:</strong> verificar que la URL sea accesible por HTTP/HTTPS y que el MD5 sea el del binario exacto.</li>
+      <li><strong>No entra en modo AP:</strong> el AP solo aparece si no logra conectarse a la red guardada.</li>
+    </ul>
+  </div>
+
+  <p class="small" style="margin-top:24px;">
+    Documento generado para el proyecto ESPHome - riego_cesped - ESP32 DevKit
+    (Zona1 GPIO25 / Zona2 GPIO23 / Zona3 GPIO22 / Zona4 GPIO21).
+  </p>
+</div>
+</body>
+</html>

@@ -13,7 +13,8 @@ Guía para trabajar en este repositorio ESPHome.
 ## Git / GitHub
 
 - Push al repo `alejandronovillo1984-collab/esphome` por HTTPS.
-- Las credenciales de GitHub están en `~/.git-credentials` (helper `credential.helper store`, chmod 600). **No** guardarlas en este repo ni en AGENTS.md.
+- Las credenciales de GitHub están en `~/.git-credentials` (helper `credential.helper store`, chmod 600). Backup del archivo anterior en `~/.git-credentials.bak` (chmod 600).
+- Formato: `https://<usuario>:<PAT>@github.com` (para PAT clásico `ghp_...` usar `x-access-token` como usuario). **No** copiar el token a este repo ni a este archivo.
 
 ## Flasheo por USB
 
@@ -25,10 +26,11 @@ Usá **siempre** el script `flasheador.sh` (nunca `esphome run` directo sobre `f
 ./flasheador.sh riegoTanque              # flash tanque_riego.yaml a /dev/ttyUSB0
 ./flasheador.sh forrajero                # flash forrajero.yaml a /dev/ttyUSB0
 ./flasheador.sh cuatroRelays             # flash cuatro_relays.yaml a /dev/ttyUSB0
+./flasheador.sh riegoCesped              # flash riego_cesped.yaml a /dev/ttyUSB0
 ./flasheador.sh forrajero /dev/ttyUSB1   # puerto custom
 ```
 
-`riegoTanque` = `config/tanque_riego.yaml` (substitutions fijas en el archivo). `cuatroRelays` = `config/cuatro_relays.yaml` (ESP-12F, 4 relés activos en alto, substitutions fijas). `forrajero` = `config/forrajero.yaml`, que usa substitutions del dashboard (`${DEVICE_NAME}`, `${WIFI_SSID}`, `${WIFI_PASSWORD}`, `${MQTT_HOST}`, `${MQTT_PORT}`, `${MQTT_USERNAME}`, `${MQTT_PASSWORD}`). El CLI de ESPHome **no** las resuelve solo, así que **no** intentés flashear el archivo original directamente (falla con `'$' is an invalid character`). El script resuelve las substitutions vía `sed` a una copia en `/tmp/esphome_flash_cache/<target>/`.
+`riegoTanque` = `config/tanque_riego.yaml` (substitutions fijas en el archivo). `cuatroRelays` = `config/cuatro_relays.yaml` (ESP-12F, 4 relés activos en alto, substitutions fijas). `riegoCesped` = `config/riego_cesped.yaml` (ESP32, 4 zonas de riego, substitutions fijas). `forrajero` = `config/forrajero.yaml`, que usa substitutions del dashboard (`${DEVICE_NAME}`, `${WIFI_SSID}`, `${WIFI_PASSWORD}`, `${MQTT_HOST}`, `${MQTT_PORT}`, `${MQTT_USERNAME}`, `${MQTT_PASSWORD}`). El CLI de ESPHome **no** las resuelve solo, así que **no** intentés flashear el archivo original directamente (falla con `'$' is an invalid character`). El script resuelve las substitutions vía `sed` a una copia en `/tmp/esphome_flash_cache/<target>/`.
 
 Permite override de substitutions por env vars:
 
@@ -86,6 +88,7 @@ Tras un `esphome clean` es necesario recompilar entero (~10 min). **Atención:**
 
 - `config/tanque_riego.yaml` — config de ejemplo con: portal cautivo + IP estática del AP, topic prefix MQTT dinámico (MAC suffix + birth/last-will), `datetime` manual para setear fecha/hora del device (fallback NTP), backup de epoch en `globals` restaurado en `on_boot`, switch `forzado_manual` (override de la rutina de riego). Documentado en `templatesWeb/tanque_riego_guia.html`.
 - `config/forrajero.yaml` — placa **Kincony KC868-A4** (4 relés: Agua = K4/GPIO4, Sanitizante = K2/GPIO15, K1/K3 libres). Ciclo de riego de 14 días con fase por día (intervalo y segundos de agua), sanitizante 1 sola vez al día (1er ciclo), índice de intensidad (`global_indice_intensidad`, 0–10: +2s de agua y −15 min de intervalo por punto). Documentado en `templatesWeb/forrajero_guia.html`.
+- `config/riego_cesped.yaml` — **ESP32 DevKit**, 4 zonas de césped (relés GPIO25/23/22/21). Cada zona: switch `zona N activa`, text `zona N horario` (horas separadas por coma, ej. `6,18,20`; acepta `HH:MM`), number `zona N duracion min`, relay, forzado manual, buttons accionar/detener y text_sensor de estado. Rutina cada minuto vía SNTP; las zonas programadas se ejecutan secuencialmente (cola `g_pendingN`) y cada disparo se persiste por hora/minuto (`g_last_keyN`). Programador general + MQTT dinámico + AP + portal cautivo + web_server + datetime manual + OTA local/HTTP. Documentado en `templatesWeb/riego_cesped_guia.html`.
 - `config/cuatro_relays.yaml` — placa **ESP-12F 4 Channel Relay** (ESP8266; Relay1=GPIO16, Relay2=GPIO14, Relay3=GPIO12, Relay4=GPIO13; relés activos en alto). Cada canal tiene su propio modo (`apagado`, `manual`, los 6 planes del tanque y `germinadora`), extras, duración manual, programador, relay, **forzado manual** (switch `forzado_c1..c4`, fw 1.0.7+: prende el relay e ignora la rutina hasta apagarlo) y botones. En modo AP el MQTT se deshabilita para liberar RAM; el captive portal queda operativo y al guardar WiFi el equipo se reinicia y conecta a la red nueva. Documentado en `templatesWeb/cuatro_relays_guia.html`.
 
 ## OTA remoto (firmware desde la app petraka)
@@ -102,7 +105,7 @@ Tras un `esphome clean` es necesario recompilar entero (~10 min). **Atención:**
 
 - `URL`: binario `.bin` accesible por HTTP(S).
 - `MD5`: md5 hex (32 chars) del binario; el device lo verifica antes de flashear (requisito del componente `ota.http_request`).
-- `<prefijo>` = `tanque_riego-<6 hex MAC>`, `cuatro_relays-<6 hex MAC>` o `<dev_name>-<6 hex MAC>`.
+- `<prefijo>` = `tanque_riego-<6 hex MAC>`, `cuatro_relays-<6 hex MAC>`, `riego_cesped-<6 hex MAC>` o `<dev_name>-<6 hex MAC>`.
 
 ### Control de entidades por MQTT (tanque_riego)
 
